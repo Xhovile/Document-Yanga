@@ -27,6 +27,7 @@ export interface Document {
   type: DocumentType;
   createdAt: number;
   updatedAt: number;
+  lastOpenedAt: number;
   size: number;
   syncStatus: SyncStatusType;
   isOfflineDraft: boolean;

@@ -5,11 +5,9 @@
 
 import React, { useState, useRef } from 'react';
 import { 
-  FileText, Plus, Search, Trash2, Wifi, WifiOff, FileCode, CheckCircle2, AlertTriangle, 
-  Upload, User, FileDigit, Globe, Lock, Users, LogIn, ChevronLeft, ChevronRight, Menu
+  FileText, Plus, Search, Trash2, Wifi, WifiOff, FileCode, ChevronLeft, Upload, User, Settings, Database
 } from 'lucide-react';
 import { Document, DocumentType, AppUser } from '../types';
-import { getByteSize } from '../db';
 import * as mammoth from 'mammoth';
 
 interface SidebarProps {
@@ -25,6 +23,7 @@ interface SidebarProps {
   onUserUpdate: (user: AppUser) => void;
   isCollapsed: boolean;
   setIsCollapsed: (collapsed: boolean) => void;
+  onToggleSettings: () => void;
 }
 
 export default function Sidebar({
@@ -40,21 +39,20 @@ export default function Sidebar({
   onUserUpdate,
   isCollapsed,
   setIsCollapsed,
+  onToggleSettings,
 }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
-  const [newDocType, setNewDocType] = useState<DocumentType>('md');
+  const [newDocType, setNewDocType] = useState<DocumentType>('docx');
   const [newTitle, setNewTitle] = useState('');
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [profileModalDoc, setProfileModalDoc] = useState(false);
+  const [showProfileSwitcher, setShowProfileSwitcher] = useState(false);
   
-  // States for user credential editing
   const [editEmail, setEditEmail] = useState(currentUser.email);
   const [editName, setEditName] = useState(currentUser.name);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Filter folders/files
   const filteredDocs = documents.filter((doc) =>
     doc.title.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -70,22 +68,11 @@ export default function Sidebar({
     setShowCreateMenu(false);
   };
 
-  // Drag and Drop File Handlers
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
   const processFile = async (file: File) => {
     const filename = file.name;
     const size = file.size;
     const ext = filename.split('.').pop()?.toLowerCase();
     
-    // Validate supported formats
     if (ext === 'txt' || ext === 'md') {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -98,27 +85,20 @@ export default function Sidebar({
       reader.onload = async (e) => {
         const arrayBuffer = e.target?.result as ArrayBuffer;
         try {
-          // Process DOCX client-side using mammoth
           const result = await mammoth.convertToHtml({ arrayBuffer });
-          // Stripping some dense elements but retaining light structures or rich elements
           onImportDoc(filename, result.value, 'docx', size);
         } catch (err) {
-          console.error('Error parsing DOCX file: ', err);
-          // Fallback to text matching
-          onImportDoc(filename, `Failed to parse binary docx structure. Raw loading...`, 'docx', size);
+          console.error(err);
+          onImportDoc(filename, `Error loading Word document content.`, 'docx', size);
         }
       };
       reader.readAsArrayBuffer(file);
     } else if (ext === 'pdf') {
-      // PDF viewing is view only. Since PDF binary is too large, we can create a simulated file pointer in IndexedDB
-      // and display information + raw text or render a high quality mock/preview
       const reader = new FileReader();
-      reader.onload = (e) => {
-        onImportDoc(filename, `[PDF Binary stream - View Only Mode Available] Size: ${size} bytes`, 'pdf', size);
+      reader.onload = () => {
+        onImportDoc(filename, `[PDF Preview - View Mode Rendered] Size: ${size} bytes`, 'pdf', size);
       };
       reader.readAsText(file);
-    } else {
-      alert('Supported file formats: .txt, .md, .docx, .pdf');
     }
   };
 
@@ -126,15 +106,13 @@ export default function Sidebar({
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      await processFile(file);
+      await processFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleManualUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      await processFile(file);
+      await processFile(e.target.files[0]);
     }
   };
 
@@ -145,263 +123,195 @@ export default function Sidebar({
       name: editName,
       isLoggedIn: true,
     });
-    setProfileModalDoc(false);
+    setShowProfileSwitcher(false);
   };
+
+  // Human bytes size conversion helper
+  const totalDiskBytes = documents.reduce((acc, d) => acc + (d.size || 0), 0);
+  const formattedDBSize = (totalDiskBytes / 1024).toFixed(1);
 
   return (
     <div 
-      className={`bg-slate-900 text-slate-100 flex-shrink-0 relative transition-all duration-300 flex flex-col ${
+      className={`bg-[#12141a] text-slate-300 flex-shrink-0 relative transition-all duration-300 flex flex-col ${
         isCollapsed 
           ? 'w-0 overflow-hidden border-r-0 opacity-0 pointer-events-none' 
-          : 'w-80 border-r border-slate-800'
+          : 'w-72 border-r border-[#1d1f27]'
       } ${
-        isDragging ? 'ring-4 ring-cyan-500 ring-inset' : ''
+        isDragging ? 'ring-2 ring-cyan-500/20 ring-inset bg-[#151821]' : ''
       }`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
+      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+      onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
       id="sidebar-container"
     >
-      {/* App Header */}
-      <div className="p-4 border-b border-slate-800 flex items-center justify-between" id="sidebar-header">
-        <div className="flex items-center space-x-2">
-          <FileCode className="h-6 w-6 text-cyan-400" />
-          <span className="font-sans font-bold text-lg tracking-tight bg-gradient-to-r from-cyan-400 to-indigo-400 bg-clip-text text-transparent">
+      {/* Top area: App Name / Status Indicator / Collapse */}
+      <div className="p-5 border-b border-[#1d1f27] flex items-center justify-between" id="sidebar-header">
+        <div className="flex items-center space-x-2.5">
+          <FileCode className="h-5 w-5 text-neutral-400" />
+          <span className="font-sans font-semibold text-base tracking-tight text-slate-100">
             Yanga
           </span>
-          <span className="text-[10px] uppercase tracking-wider font-mono px-1 py-0.5 rounded-sm bg-slate-800 text-slate-400">
-            MVP
-          </span>
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" title="System Standby" />
         </div>
 
-        {/* Header Action Row */}
-        <div className="flex items-center space-x-1.5" id="header-action-row">
-          {/* Network Button Status Indicator */}
+        <div className="flex items-center space-x-2">
+          {/* Subtle online/offline toggler */}
           <button 
+            type="button"
             onClick={() => setIsOffline(!isOffline)}
-            className={`flex items-center space-x-1 px-1.5 py-1 rounded text-[11px] font-mono font-bold transition-colors shrink-0 ${
+            className={`p-1.5 rounded transition-all cursor-pointer ${
               isOffline 
-                ? 'bg-amber-950/40 border border-amber-800 text-amber-400 hover:bg-amber-950/60' 
-                : 'bg-emerald-950/40 border border-emerald-800 text-emerald-400 hover:bg-emerald-950/60'
+                ? 'text-amber-500 hover:bg-amber-950/20' 
+                : 'text-emerald-500 hover:bg-emerald-950/20'
             }`}
-            title={isOffline ? "Currently Offline" : "Connected to sync"}
-            id="network-toggle-btn"
+            title={isOffline ? "Currently working offline" : "Database Synchronized"}
           >
-            {isOffline ? (
-              <>
-                <WifiOff className="h-3 w-3 text-amber-400" />
-                <span>Off-line</span>
-              </>
-            ) : (
-              <>
-                <Wifi className="h-3 w-3 text-emerald-400" />
-                <span>On-line</span>
-              </>
-            )}
+            {isOffline ? <WifiOff className="h-3.5 w-3.5" /> : <Wifi className="h-3.5 w-3.5" />}
           </button>
 
           <button
+            type="button"
             onClick={() => setIsCollapsed(true)}
-            className="p-1 px-1.5 rounded-md hover:bg-slate-850 text-slate-400 hover:text-slate-100 border border-transparent hover:border-slate-800 transition-all flex items-center justify-center cursor-pointer shrink-0"
-            title="Fold Sidebar"
-            id="collapse-sidebar-btn"
+            className="p-1 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-900 transition-all cursor-pointer"
+            title="Collapse sidebar"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* User Status Profile */}
-      <div className="p-3 bg-slate-950/40 border-b border-slate-800 flex items-center justify-between" id="user-profile-section">
-        <div className="flex items-center space-x-2">
-          <div className="h-7 w-7 rounded-full bg-cyan-700 flex items-center justify-center text-xs font-bold text-white uppercase">
-            {currentUser.name.slice(0, 2)}
-          </div>
-          <div className="overflow-hidden">
-            <h4 className="text-xs font-medium text-slate-200 truncate">{currentUser.name}</h4>
-            <p className="text-[10px] text-slate-400 font-mono truncate">{currentUser.email}</p>
-          </div>
+      {/* Middle area: Search & Creation trigger */}
+      <div className="p-4 space-y-3.5 border-b border-[#1d1f27]" id="sidebar-actions-area">
+        <div className="relative">
+          <Search className="absolute left-3 top-2.5 text-slate-500 h-3.5 w-3.5" />
+          <input
+            type="text"
+            placeholder="Search documents..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-[#181a22] border border-[#1d1f27] rounded-md py-1.5 pl-9 pr-3 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-neutral-700 font-sans"
+            id="search-input"
+          />
         </div>
-        <button 
-          onClick={() => setProfileModalDoc(true)}
-          className="text-slate-400 hover:text-cyan-400 p-1 rounded-md hover:bg-slate-800 transition-colors"
-          title="Simulate Switching User Account"
-          id="edit-profile-btn"
-        >
-          <User className="h-4 w-4" />
-        </button>
-      </div>
 
-      {/* Search Bar */}
-      <div className="p-3 relative" id="sidebar-search">
-        <Search className="absolute left-6 top-5.5 text-slate-400 h-4 w-4" />
-        <input
-          type="text"
-          placeholder="Search workspace..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full bg-slate-950 border border-slate-800 rounded-md py-1.5 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500 font-sans"
-          id="search-input"
-        />
-      </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCreateMenu(!showCreateMenu)}
+            className="flex-1 flex items-center justify-center space-x-1.5 bg-[#f5f5f5] hover:bg-white text-slate-950 font-medium text-xs rounded-md py-1.5 px-3 transition-colors cursor-pointer"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>New Doc</span>
+          </button>
 
-      {/* Document Actions Menu */}
-      <div className="px-3 pb-2 flex gap-1.5" id="sidebar-actions">
-        <button
-          onClick={() => setShowCreateMenu(!showCreateMenu)}
-          className="flex-1 flex items-center justify-center space-x-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs rounded-md py-2 px-3 transition-colors shadow-sm cursor-pointer"
-          id="new-document-trigger"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          <span>New Document</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center justify-center bg-[#1c1e26] hover:bg-[#222530] text-slate-300 border border-[#2b2e3a] font-medium text-xs rounded-md p-1.5 transition-colors cursor-pointer"
+            title="Import text, MD, DOCX, or PDF"
+          >
+            <Upload className="h-3.5 w-3.5" />
+          </button>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleManualUpload}
+            accept=".txt,.md,.docx,.pdf"
+            className="hidden"
+          />
+        </div>
 
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-medium text-xs rounded-md p-2 transition-colors cursor-pointer"
-          title="Import local TXT, MD, DOCX, or PDF"
-          id="file-upload-btn"
-        >
-          <Upload className="h-3.5 w-3.5" />
-        </button>
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleManualUpload}
-          accept=".txt,.md,.docx,.pdf"
-          className="hidden"
-          id="hidden-file-input"
-        />
-      </div>
-
-      {/* Create New Document Form overlay option */}
-      {showCreateMenu && (
-        <form onSubmit={handleCreate} className="mx-3 mb-3 p-3 bg-slate-950 border border-slate-800 rounded-md space-y-2.5 animate-fadeIn" id="create-document-form">
-          <div className="flex gap-1" id="type-selector-group">
-            {(['md', 'txt', 'docx', 'pdf'] as DocumentType[]).map((type) => (
+        {showCreateMenu && (
+          <form onSubmit={handleCreate} className="p-3 bg-[#181a22] border border-[#232631] rounded-lg space-y-2 animate-fadeIn" id="create-document-form">
+            <div className="flex gap-1">
+              {(['docx', 'txt', 'md'] as DocumentType[]).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setNewDocType(type)}
+                  className={`flex-1 text-[9px] font-mono py-1 rounded uppercase border font-semibold ${
+                    newDocType === type
+                      ? 'bg-slate-800 border-slate-700 text-slate-100'
+                      : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                placeholder="Name..."
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                className="flex-1 bg-slate-950 border border-[#262936] rounded-md px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-700"
+                autoFocus
+                required
+              />
               <button
-                key={type}
-                type="button"
-                onClick={() => setNewDocType(type)}
-                className={`flex-1 text-[10px] font-mono font-bold py-1 px-1 rounded uppercase border ${
-                  newDocType === type
-                    ? 'bg-cyan-950 border-cyan-500 text-cyan-300'
-                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-                id={`type-btn-${type}`}
+                type="submit"
+                className="bg-slate-200 hover:bg-white text-slate-900 rounded-md px-2 px-2.5 text-xs font-semibold cursor-pointer"
               >
-                {type}
+                Add
               </button>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Filename..."
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              className="flex-1 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-cyan-500"
-              autoFocus
-              id="new-doc-title-input"
-            />
-            <button
-              type="submit"
-              className="bg-cyan-600 hover:bg-cyan-500 text-white rounded px-3 text-xs font-semibold cursor-pointer"
-              id="submit-create-btn"
-            >
-              Add
-            </button>
-          </div>
-        </form>
-      )}
+            </div>
+          </form>
+        )}
+      </div>
 
-      {/* Document List */}
-      <div className="flex-1 overflow-y-auto px-2 space-y-0.5 border-t border-slate-800/60 pt-2" id="document-list-container">
+      {/* Middle area: Recent files list */}
+      <div className="flex-1 overflow-y-auto px-3.5 py-4 space-y-1" id="recent-files-scroller">
+        <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1.5 mb-2 font-mono">
+          Recent Documents
+        </h3>
+        
         {filteredDocs.length === 0 ? (
-          <div className="text-center py-8 text-xs text-slate-500">
-            No files found in workspace.
+          <div className="py-6 text-center text-slate-500 text-xs font-mono">
+            Empty workspace
           </div>
         ) : (
           filteredDocs.map((doc) => {
             const isActive = activeDoc?.id === doc.id;
-            const isShared = doc.permissions.sharedWith.length > 0 || doc.permissions.linkSharing !== 'private';
             
             return (
               <div
                 key={doc.id}
                 onClick={() => setActiveDoc(doc)}
-                className={`group flex items-center justify-between p-2 rounded-md cursor-pointer transition-all ${
+                className={`group flex items-center justify-between p-1.5 px-2 rounded-lg cursor-pointer transition-all ${
                   isActive
-                    ? 'bg-slate-800 text-white border-l-2 border-cyan-400'
-                    : 'text-slate-300 hover:bg-slate-850 hover:text-white'
+                    ? 'bg-[#1c1e26] text-slate-100 font-medium border-l border-neutral-400'
+                    : 'text-slate-400 hover:bg-[#15171f] hover:text-slate-200'
                 }`}
-                id={`doc-item-${doc.id}`}
               >
                 <div className="flex items-center space-x-2.5 min-w-0 flex-1">
-                  <div className={`p-1.5 rounded-md ${
-                    doc.type === 'md' ? 'bg-indigo-950/70 text-indigo-400' :
-                    doc.type === 'pdf' ? 'bg-rose-950/70 text-rose-400' :
-                    doc.type === 'docx' ? 'bg-sky-950/70 text-sky-400' :
-                    'bg-slate-900 text-slate-400'
-                  }`}>
-                    <FileText className="h-4 w-4" />
-                  </div>
+                  <FileText className={`h-3.5 w-3.5 shrink-0 ${
+                    isActive ? 'text-slate-200' : 'text-slate-500'
+                  }`} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium truncate leading-tight group-hover:text-white">
+                    <p className="text-xs truncate leading-tight">
                       {doc.title}
                     </p>
-                    <div className="flex items-center space-x-1.5 mt-0.5 text-[9px] font-mono text-slate-500">
+                    <div className="flex items-center space-x-1 mt-0.5 text-[9px] font-mono text-slate-500">
                       <span>{(doc.size / 1024).toFixed(1)} KB</span>
                       <span>•</span>
-                      <span className="uppercase">{doc.type}</span>
-                      {doc.syncStatus === 'pending' && (
-                        <>
-                          <span>•</span>
-                          <span className="text-amber-500 font-bold flex items-center gap-0.5">
-                            <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse inline-block" />
-                            Draft
-                          </span>
-                        </>
-                      )}
-                      {doc.syncStatus === 'conflict' && (
-                        <>
-                          <span>•</span>
-                          <span className="text-rose-500 font-bold flex items-center gap-0.5">
-                            <AlertTriangle className="h-2 w-2" />
-                            Conflict
-                          </span>
-                        </>
-                      )}
-                      {isShared && (
-                        <>
-                          <span>•</span>
-                          <span className="text-cyan-400 flex items-center font-bold">
-                            {doc.permissions.linkSharing !== 'private' ? (
-                              <Globe className="h-2 w-2" />
-                            ) : (
-                              <Users className="h-2 w-2" />
-                            )}
-                          </span>
-                        </>
-                      )}
+                      <span className="uppercase text-[8px]">{doc.type}</span>
+                      {doc.syncStatus === 'pending' && <span className="text-amber-500">✍️</span>}
+                      {doc.syncStatus === 'conflict' && <span className="text-rose-500">⚠️</span>}
                     </div>
                   </div>
                 </div>
 
-                {/* Delete action */}
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (confirm(`Delete ${doc.title}?`)) {
-                      onDeleteDoc(doc.id);
-                    }
+                    onDeleteDoc(doc.id);
                   }}
-                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-1 rounded hover:bg-slate-900 transition-all cursor-pointer"
-                  title="Move document to Trash"
-                  id={`delete-doc-btn-${doc.id}`}
+                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-1 rounded transition-all cursor-pointer"
+                  title="Move to trash"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-3 w-3" />
                 </button>
               </div>
             );
@@ -409,34 +319,57 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Drag Drop Hint Overlay */}
-      <div className="p-3 border-t border-slate-800 text-center text-[11px] text-slate-500 bg-slate-950/30" id="drag-drop-hint">
-        <p>Drag files directly here (.txt, .md, .docx, .pdf)</p>
+      {/* Bottom area: Storage status, Profile, settings drawer */}
+      <div className="p-4 bg-[#101217] border-t border-[#1d1f27] space-y-3" id="sidebar-footer">
+        
+        {/* Storage footprint label */}
+        <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 px-1">
+          <span className="flex items-center gap-1">
+            <Database className="h-3 w-3 text-slate-600" />
+            <span>Offline footprint</span>
+          </span>
+          <span className="text-slate-400 font-bold">{formattedDBSize} KB</span>
+        </div>
+
+        {/* User profile & settings layout */}
+        <div className="flex items-center justify-between pt-1 border-t border-slate-900/40" id="user-settings-row">
+          <button 
+            type="button"
+            onClick={() => setShowProfileSwitcher(!showProfileSwitcher)}
+            className="flex items-center space-x-2.5 text-left min-w-0 max-w-[180px] hover:opacity-80 transition-all cursor-pointer"
+            title="Switch workspace accounts"
+          >
+            <div className="h-6 w-6 rounded-full bg-slate-800 text-slate-300 font-bold flex items-center justify-center text-[10px] uppercase shrink-0">
+              {currentUser.name.slice(0, 2) || "YS"}
+            </div>
+            <div className="overflow-hidden">
+              <h4 className="text-xs font-medium text-slate-250 truncate">{currentUser.name || "Yanga User"}</h4>
+            </div>
+          </button>
+
+          <button 
+            type="button"
+            onClick={onToggleSettings}
+            className="p-1.5 rounded-md hover:bg-[#181a23] hover:text-slate-100 text-slate-500 transition-colors cursor-pointer"
+            title="Workspace Details & Tools"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
-      {/* Simulated User Profile Switching Modal */}
-      {profileModalDoc && (
-        <div className="absolute inset-0 bg-slate-950/90 z-45 flex items-center justify-center p-4 animate-fadeIn" id="user-sandbox-modal">
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-5 w-full max-w-sm space-y-4 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-                <LogIn className="h-4 w-4 text-cyan-400" />
-                Change Custom User Account
+      {/* Account credentials switching dialog inside sidebar boundaries */}
+      {showProfileSwitcher && (
+        <div className="absolute inset-0 bg-[#0c0d11]/95 z-40 p-5 flex flex-col justify-center animate-fadeIn">
+          <div className="space-y-4">
+            <div className="border-b border-slate-800 pb-2">
+              <h3 className="text-xs font-bold font-mono uppercase tracking-wider text-slate-200">
+                Workspace Identity
               </h3>
-              <button 
-                onClick={() => setProfileModalDoc(false)} 
-                className="text-slate-400 hover:text-slate-100 text-sm font-semibold"
-                id="close-profile-modal-btn"
-              >
-                ✕
-              </button>
             </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              We provide this profile card so you can immediately toggle between different users (e.g., matching invite list emails) to verify editing, reading, and shared permission checks perfectly!
-            </p>
-            <form onSubmit={saveProfileChange} className="space-y-3 font-sans">
+            <form onSubmit={saveProfileChange} className="space-y-3">
               <div>
-                <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">
+                <label className="block text-[9px] uppercase font-mono text-slate-500 mb-1">
                   Full Display Name
                 </label>
                 <input
@@ -444,12 +377,11 @@ export default function Sidebar({
                   required
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-850 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
-                  id="profile-name-input"
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-1.5 text-xs text-slate-200 focus:outline-none focus:border-slate-600"
                 />
               </div>
               <div>
-                <label className="block text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-1">
+                <label className="block text-[9px] uppercase font-mono text-slate-500 mb-1">
                   Email Address
                 </label>
                 <input
@@ -457,25 +389,22 @@ export default function Sidebar({
                   required
                   value={editEmail}
                   onChange={(e) => setEditEmail(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-850 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
-                  id="profile-email-input"
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-1.5 text-xs text-slate-200 focus:outline-none focus:border-slate-600"
                 />
               </div>
               <div className="flex gap-2 justify-end pt-2">
                 <button
                   type="button"
-                  onClick={() => setProfileModalDoc(false)}
-                  className="bg-slate-800 hover:bg-slate-705 px-3 py-1.5 rounded text-xs text-slate-300 transition-colors"
-                  id="cancel-profile-btn"
+                  onClick={() => setShowProfileSwitcher(false)}
+                  className="px-2.5 py-1 rounded bg-[#181a22] text-xs text-slate-450 hover:text-slate-250 hover:bg-slate-900"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-cyan-600 hover:bg-cyan-500 px-4 py-1.5 rounded text-xs text-white font-medium transition-colors"
-                  id="save-profile-btn"
+                  className="px-3.5 py-1 rounded bg-slate-200 hover:bg-white text-slate-950 text-xs font-semibold"
                 >
-                  Switch User
+                  Switch
                 </button>
               </div>
             </form>

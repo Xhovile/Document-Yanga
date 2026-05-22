@@ -5,13 +5,19 @@
 
 import { Document, AppUser, DocumentType } from './types';
 
-// Storage keys
-const STORAGE_DOCS_KEY = 'yanga_documents';
+// Native IndexedDB Settings
+const DB_NAME = 'yanga_indexed_db';
+const DB_VERSION = 1;
+const STORE_NAME = 'documents';
+
+// Storage keys for small settings
 const STORAGE_USER_KEY = 'yanga_user';
 const STORAGE_OFFLINE_KEY = 'yanga_offline_mode';
 const STORAGE_CLOUD_MOCK_KEY = 'yanga_cloud_mock';
+const STORAGE_LAST_OPENED_DOC_KEY = 'yanga_last_opened_doc_id';
+const STORAGE_SIDEBAR_COLLAPSED_KEY = 'yanga_sidebar_collapsed';
 
-// Baseline seed documents
+// Baseline seed documents updated with lastOpenedAt properties
 const DEFAULT_DOCUMENTS: Document[] = [
   {
     id: 'intro-markdown',
@@ -46,6 +52,7 @@ Document Yanga is a **lightweight, offline-first document workspace** designed t
     type: 'md',
     createdAt: Date.now() - 1000 * 60 * 60 * 2, // 2 hours ago
     updatedAt: Date.now() - 1000 * 60 * 30, // 30 mins ago
+    lastOpenedAt: Date.now() - 1000 * 60 * 5, // 5 mins ago
     size: 1048,
     syncStatus: 'synced',
     isOfflineDraft: false,
@@ -103,6 +110,7 @@ END OF SPECIFICATION FILE
     type: 'txt',
     createdAt: Date.now() - 1000 * 60 * 60 * 24, // 1 day ago
     updatedAt: Date.now() - 1000 * 60 * 60 * 12, // 12 hours ago
+    lastOpenedAt: Date.now() - 1000 * 60 * 60, // 1 hour ago
     size: 1890,
     syncStatus: 'synced',
     isOfflineDraft: false,
@@ -132,6 +140,7 @@ The integration tests have been successfully passed across all tested browser co
     type: 'docx',
     createdAt: Date.now() - 1000 * 60 * 60 * 5,
     updatedAt: Date.now() - 1000 * 60 * 60 * 5,
+    lastOpenedAt: Date.now() - 1000 * 60 * 15, // 15 mins ago
     size: 2154,
     syncStatus: 'synced',
     isOfflineDraft: false,
@@ -143,7 +152,104 @@ The integration tests have been successfully passed across all tested browser co
   }
 ];
 
-// Initialize storage helpers
+// Open connection to browser native IndexedDB
+function getDBConnection(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onerror = () => {
+      console.error('IndexedDB path opening crash:', request.error);
+      reject(request.error);
+    };
+    request.onsuccess = () => {
+      resolve(request.result);
+    };
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+  });
+}
+
+// Loads local client documents from IndexedDB
+export async function loadLocalDocuments(): Promise<Document[]> {
+  try {
+    const db = await getDBConnection();
+    const docs = await new Promise<Document[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const query = store.getAll();
+      query.onsuccess = () => resolve(query.result || []);
+      query.onerror = () => reject(query.error);
+    });
+
+    if (docs && docs.length > 0) {
+      // Return documents sorted by lastOpenedAt descending
+      return docs.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+    }
+    
+    // Seed default documents if storage is completely clean
+    await saveLocalDocuments(DEFAULT_DOCUMENTS);
+    
+    // Seed simulated mock cloud too
+    try {
+      localStorage.setItem(STORAGE_CLOUD_MOCK_KEY, JSON.stringify(DEFAULT_DOCUMENTS));
+    } catch (e) {
+      console.error('Local cloud mock seeding failed', e);
+    }
+
+    return DEFAULT_DOCUMENTS.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+  } catch (err) {
+    console.error('loadLocalDocuments failed, reverting to memory seed:', err);
+    return DEFAULT_DOCUMENTS;
+  }
+}
+
+// Saves/Updates all documents inside IndexedDB atomically
+export async function saveLocalDocuments(docs: Document[]): Promise<void> {
+  try {
+    const db = await getDBConnection();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      
+      // Clear store to maintain clean indices, then bulk insert
+      const clearReq = store.clear();
+      clearReq.onsuccess = () => {
+        if (docs.length === 0) {
+          resolve();
+          return;
+        }
+        
+        let completed = 0;
+        let failed = false;
+        
+        docs.forEach((doc) => {
+          const putReq = store.put(doc);
+          putReq.onsuccess = () => {
+            completed++;
+            if (completed === docs.length && !failed) {
+              resolve();
+            }
+          };
+          putReq.onerror = () => {
+            if (!failed) {
+              failed = true;
+              reject(putReq.error);
+            }
+          };
+        });
+      };
+      
+      clearReq.onerror = () => reject(clearReq.error);
+    });
+  } catch (err) {
+    console.error('saveLocalDocuments to IndexedDB failed', err);
+  }
+}
+
+// Initialize small workspace settings
 export function loadOfflineModeState(): boolean {
   try {
     const item = localStorage.getItem(STORAGE_OFFLINE_KEY);
@@ -170,7 +276,7 @@ export function loadUserAccount(): AppUser {
   } catch (e) {
     console.error('Failed to load user', e);
   }
-  // Default fallback user
+  
   const defaultUser: AppUser = {
     email: 'isaacmtsiriza310@gmail.com',
     name: 'Isaac M.',
@@ -185,31 +291,6 @@ export function saveUserAccount(user: AppUser) {
     localStorage.setItem(STORAGE_USER_KEY, JSON.stringify(user));
   } catch (e) {
     console.error('Failed to save user info', e);
-  }
-}
-
-// Loads local client documents
-export function loadLocalDocuments(): Document[] {
-  try {
-    const docsJson = localStorage.getItem(STORAGE_DOCS_KEY);
-    if (docsJson) {
-      return JSON.parse(docsJson);
-    }
-  } catch (e) {
-    console.error('Failed to load local docs', e);
-  }
-
-  // Seed default docs and back up to both Cloud and Local stores
-  localStorage.setItem(STORAGE_DOCS_KEY, JSON.stringify(DEFAULT_DOCUMENTS));
-  localStorage.setItem(STORAGE_CLOUD_MOCK_KEY, JSON.stringify(DEFAULT_DOCUMENTS));
-  return DEFAULT_DOCUMENTS;
-}
-
-export function saveLocalDocuments(docs: Document[]) {
-  try {
-    localStorage.setItem(STORAGE_DOCS_KEY, JSON.stringify(docs));
-  } catch (e) {
-    console.error('Failed to save local docs', e);
   }
 }
 
@@ -255,11 +336,9 @@ export function deleteCloudDocument(id: string) {
 
 /**
  * Triggers a file-by-file update or sync query.
- * Detects whether there's a conflict (i.e. the file was modified in simulated cloud,
- * distinct from the client's original state, while client edited offline).
+ * Detects whether there's a conflict
  */
 export function syncDocumentToServer(doc: Document): { success: boolean; conflictWith?: Document } {
-  // If offline mode is enabled, can't sync! Mark as pending.
   if (loadOfflineModeState()) {
     return { success: false };
   }
@@ -268,17 +347,13 @@ export function syncDocumentToServer(doc: Document): { success: boolean; conflic
   const remoteDoc = cloudDocs.find(d => d.id === doc.id);
 
   if (remoteDoc) {
-    // If the remote version is newer and different, and the client modified it offline,
-    // we have a collision/conflict!
     if (remoteDoc.updatedAt > (doc.originalContent ? doc.updatedAt : 0) && remoteDoc.content !== doc.originalContent) {
       if (remoteDoc.content !== doc.content) {
-        // Yes, real conflict! Return the remote file to handle conflict resolution UI
         return { success: false, conflictWith: remoteDoc };
       }
     }
   }
 
-  // No conflict, merge and write to simulated Cloud
   saveCloudDocument(doc);
   return { success: true };
 }

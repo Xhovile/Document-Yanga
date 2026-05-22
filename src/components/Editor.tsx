@@ -1,14 +1,15 @@
 /**
  * @license
- * SPDX-License-Identifier: Apache-2.5
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Eye, Edit3, Share2, RefreshCw, Lock, AlertTriangle, FileText, 
-  Heading1, Heading2, Bold, Italic, List, Shield, HelpCircle, Save, Download, Menu
+  Eye, Edit3, Share2, Info, Lock, AlertTriangle, FileText, 
+  Heading1, Heading2, Bold, Italic, List, Shield, Download, Menu, ChevronRight, Users, Globe, Settings, CornerUpLeft, CornerUpRight,
+  Save, ChevronDown
 } from 'lucide-react';
-import { Document, WorkspaceMode, AppUser, SharingPermission, UserPermission } from '../types';
+import { Document, WorkspaceMode, AppUser, SharingPermission } from '../types';
 import { getByteSize } from '../db';
 
 interface EditorProps {
@@ -25,6 +26,11 @@ interface EditorProps {
   onExportPDF: (doc: Document) => void;
   isSidebarCollapsed: boolean;
   setIsSidebarCollapsed: (collapsed: boolean) => void;
+  onToggleSettings: () => void;
+  documentsList?: Document[]; // Optional reference for recent files drawer when none is open
+  onSelectDoc?: (doc: Document) => void;
+  onSaveAs?: (doc: Document, newTitle: string) => void;
+  onSaveAndExit?: () => void;
 }
 
 export default function Editor({
@@ -41,38 +47,145 @@ export default function Editor({
   onExportPDF,
   isSidebarCollapsed,
   setIsSidebarCollapsed,
+  onToggleSettings,
+  documentsList = [],
+  onSelectDoc,
+  onSaveAs,
+  onSaveAndExit,
 }: EditorProps) {
   const [localTitle, setLocalTitle] = useState('');
+  const [isRightDrawerOpen, setIsRightDrawerOpen] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<'info' | 'share' | 'sync'>('info');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'view' | 'edit'>('view');
-  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   
+  // Save options dropdown states
+  const [showSaveDropdown, setShowSaveDropdown] = useState(false);
+  const [isPromptingSaveAs, setIsPromptingSaveAs] = useState(false);
+  const [saveAsTitle, setSaveAsTitle] = useState('');
+  const [saveBannerMessage, setSaveBannerMessage] = useState<string | null>(null);
+  
+  const saveDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (saveDropdownRef.current && !saveDropdownRef.current.contains(event.target as Node)) {
+        setShowSaveDropdown(false);
+        setIsPromptingSaveAs(false);
+      }
+    }
+    window.document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      window.document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+  
+  // Clean undo/redo buffers for document editing
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [isHistoryUpdate, setIsHistoryUpdate] = useState(false);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Sync title with document
   useEffect(() => {
     if (document) {
       setLocalTitle(document.title);
+      // Reset undo history for the new active document
+      setHistory([document.content]);
+      setHistoryIndex(0);
     }
   }, [document?.id]);
 
+  // Capture code content changes to update history indices gently
+  const handleContentEdit = (newVal: string) => {
+    onContentChange(newVal);
+
+    if (isHistoryUpdate) {
+      setIsHistoryUpdate(false);
+      return;
+    }
+
+    const nextHist = history.slice(0, historyIndex + 1);
+    nextHist.push(newVal);
+    // Limit history stack size to 50
+    if (nextHist.length > 50) nextHist.shift();
+    setHistory(nextHist);
+    setHistoryIndex(nextHist.length - 1);
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0 && document) {
+      const prevIdx = historyIndex - 1;
+      setHistoryIndex(prevIdx);
+      setIsHistoryUpdate(true);
+      onContentChange(history[prevIdx]);
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1 && document) {
+      const nextIdx = historyIndex + 1;
+      setHistoryIndex(nextIdx);
+      setIsHistoryUpdate(true);
+      onContentChange(history[nextIdx]);
+    }
+  };
+
   if (!document) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 text-slate-400 p-8 text-center" id="editor-empty-state">
-        <div className="border border-slate-800 rounded-2xl p-8 max-w-md bg-slate-900/40 space-y-4 animate-scaleUp">
-          <div className="h-12 w-12 rounded-full bg-cyan-950 flex items-center justify-center text-cyan-400 mx-auto">
-            <FileText className="h-6 w-6" />
+      <div className="flex-1 flex flex-col items-center justify-center bg-[#0d0e12] text-slate-400 p-8 text-center" id="editor-empty-state">
+        <div className="max-w-md w-full py-16 px-8 rounded-xl bg-[#12141a]/40 border border-[#1e2028]/30 space-y-5 animate-scaleUp">
+          <div className="h-10 w-10 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 mx-auto">
+            <FileText className="h-4 w-4 text-slate-400" />
           </div>
-          <h2 className="text-lg font-sans font-bold text-slate-100">No Document Active</h2>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Select an existing file from the sidebar, drag a file inside the explorer bounds, or create a brand new draft to begin writing offline.
-          </p>
+          <div className="space-y-1.5">
+            <h2 className="text-base font-medium text-slate-100 tracking-tight">Focus Your Thoughts</h2>
+            <p className="text-xs text-slate-400 font-sans max-w-xs mx-auto leading-relaxed">
+              Create a modern markdown file or import rich DOCX reports to write with surgical precision and control.
+            </p>
+          </div>
+          
+          <button
+            type="button"
+            onClick={onToggleSettings}
+            className="inline-flex items-center space-x-1.5 bg-[#f5f5f5] hover:bg-white text-slate-950 px-5 py-2 text-xs font-semibold rounded-lg transition-all"
+          >
+            <Settings className="h-3.5 w-3.5" />
+            <span>Open Workspace Diagnostics</span>
+          </button>
         </div>
+
+        {/* Minimal recent selection display below */}
+        {documentsList.length > 0 && onSelectDoc && (
+          <div className="mt-12 max-w-xl w-full text-left space-y-3 px-4">
+            <h4 className="text-[10px] uppercase font-mono tracking-widest text-[#5e6573] font-bold">
+              Recent Workspace Documents
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {documentsList.slice(0, 4).map((d) => (
+                <div 
+                  key={d.id}
+                  onClick={() => onSelectDoc(d)}
+                  className="p-3 rounded-lg bg-[#12141a]/60 border border-[#1d1f27]/80 hover:border-[#2d313f]/80 transition-all cursor-pointer flex items-center justify-between"
+                >
+                  <div className="flex items-center space-x-2.5 min-w-0">
+                    <FileText className="h-4 w-4 text-slate-500 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-slate-300 truncate font-semibold">{d.title}</p>
+                      <p className="text-[9px] text-slate-500 font-mono mt-0.5 capitalize">{d.type} • {(d.size/1024).toFixed(1)} KB</p>
+                    </div>
+                  </div>
+                  <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
-  // Permission Checks
   const isOwner = document.permissions.owner === currentUser.email;
   const userDirectPermission = document.permissions.sharedWith.find(
     (invite) => invite.email === currentUser.email
@@ -86,79 +199,7 @@ export default function Editor({
     document.permissions.linkSharing !== 'private' ||
     userDirectPermission !== undefined;
 
-  // Render content based on Document's markdown / HTML / raw txt
-  const parseMarkdownToReact = (markdown: string) => {
-    const lines = markdown.split('\n');
-    let insideList = false;
-    const items: React.ReactNode[] = [];
-
-    lines.forEach((line, index) => {
-      // Heading 1
-      if (line.startsWith('# ')) {
-        items.push(<h1 key={index} className="text-2xl font-bold font-sans text-slate-100 mt-6 mb-3 tracking-tight border-b border-slate-800 pb-2">{line.slice(2)}</h1>);
-      } 
-      // Heading 2
-      else if (line.startsWith('## ')) {
-        items.push(<h2 key={index} className="text-xl font-bold font-sans text-slate-200 mt-5 mb-2.5 tracking-tight">{line.slice(3)}</h2>);
-      } 
-      // Heading 3
-      else if (line.startsWith('### ')) {
-        items.push(<h3 key={index} className="text-lg font-bold font-sans text-slate-300 mt-4 mb-2">{line.slice(4)}</h3>);
-      } 
-      // Lists
-      else if (line.startsWith('- ') || line.startsWith('* ')) {
-        items.push(
-          <li key={index} className="ml-5 list-disc text-sm text-slate-300 mb-1 leading-relaxed">
-            {line.slice(2)}
-          </li>
-        );
-      } 
-      // Divider
-      else if (line.trim() === '---') {
-        items.push(<hr key={index} className="my-6 border-slate-800" />);
-      } 
-      // Standard paragraph
-      else {
-        if (line.trim() === '') {
-          items.push(<div key={index} className="h-3" />);
-        } else {
-          // Process light inline strong text like **bold** and *italic*
-          let elementContent: React.ReactNode = line;
-          const boldRegex = /\*\*(.*?)\*\*/g;
-          const matches = line.match(boldRegex);
-          
-          if (matches) {
-            const parts = line.split(/\*\*.*?\*\*/g);
-            const innerTexts: string[] = [];
-            let match;
-            while ((match = boldRegex.exec(line)) !== null) {
-              innerTexts.push(match[1]);
-            }
-            elementContent = (
-              <span>
-                {parts.map((p, i) => (
-                  <span key={i}>
-                    {p}
-                    {i < innerTexts.length && <strong className="font-bold text-cyan-400">{innerTexts[i]}</strong>}
-                  </span>
-                ))}
-              </span>
-            );
-          }
-
-          items.push(
-            <p key={index} className="text-sm text-slate-300 mb-3.5 leading-relaxed font-sans">
-              {elementContent}
-            </p>
-          );
-        }
-      }
-    });
-
-    return <div className="space-y-1">{items}</div>;
-  };
-
-  // Helper formatting injectors
+  // Formatting injector matching caret positions
   const injectFormatting = (syntax: string) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -176,9 +217,8 @@ export default function Editor({
     else if (syntax === 'list') replacement = `\n- ${selected || 'list item'}`;
 
     const newContent = text.substring(0, start) + replacement + text.substring(end);
-    onContentChange(newContent);
+    handleContentEdit(newContent);
 
-    // Reset selection focus
     setTimeout(() => {
       textarea.focus();
       textarea.setSelectionRange(start + replacement.length, start + replacement.length);
@@ -192,430 +232,650 @@ export default function Editor({
     }
   };
 
-  // Sync triggers
-  const executeSync = () => {
-    setSyncFeedback("Syncing document metadata...");
-    onTriggerSync(document.id);
-    setTimeout(() => {
-      setSyncFeedback(null);
-    }, 2000);
+  // Custom Markdown Parser rendering beautifully spaced typography
+  const renderMarkdown = (markdown: string) => {
+    const lines = markdown.split('\n');
+    const items: React.ReactNode[] = [];
+
+    lines.forEach((line, index) => {
+      if (line.startsWith('# ')) {
+        items.push(<h1 key={index} className="text-2xl font-sans font-semibold text-slate-100 mt-6 mb-3 tracking-tight pb-1">{line.slice(2)}</h1>);
+      } else if (line.startsWith('## ')) {
+        items.push(<h2 key={index} className="text-lg font-sans font-semibold text-slate-200 mt-5 mb-2 tracking-tight">{line.slice(3)}</h2>);
+      } else if (line.startsWith('### ')) {
+        items.push(<h3 key={index} className="text-base font-sans font-semibold text-slate-300 mt-4 mb-1.5 tracking-tight">{line.slice(4)}</h3>);
+      } else if (line.startsWith('- ') || line.startsWith('* ')) {
+        items.push(
+          <li key={index} className="ml-4 list-disc text-slate-300 text-sm leading-relaxed mb-1 font-sans">
+            {line.slice(2)}
+          </li>
+        );
+      } else if (line.trim() === '---') {
+        items.push(<hr key={index} className="my-5 border-slate-800/40" />);
+      } else {
+        if (line.trim() === '') {
+          items.push(<div key={index} className="h-3" />);
+        } else {
+          let contentNode: React.ReactNode = line;
+          const boldRegex = /\*\*(.*?)\*\*/g;
+          const matches = line.match(boldRegex);
+          
+          if (matches) {
+            const parts = line.split(/\*\*.*?\*\*/g);
+            const boldWords: string[] = [];
+            let match;
+            while ((match = boldRegex.exec(line)) !== null) {
+              boldWords.push(match[1]);
+            }
+            contentNode = (
+              <span>
+                {parts.map((p, i) => (
+                  <span key={i}>
+                    {p}
+                    {i < boldWords.length && <strong className="font-semibold text-slate-100">{boldWords[i]}</strong>}
+                  </span>
+                ))}
+              </span>
+            );
+          }
+
+          items.push(
+            <p key={index} className="text-slate-350 text-[13.5px] leading-relaxed mb-3.5 font-sans">
+              {contentNode}
+            </p>
+          );
+        }
+      }
+    });
+
+    return <div className="space-y-1">{items}</div>;
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-slate-950 text-slate-100 overflow-hidden" id="editor-active-container">
-      {/* File Top Bar / Title & Mode Switches */}
-      <div className="px-6 py-4 border-b border-slate-900 bg-slate-950 flex flex-col md:flex-row md:items-center justify-between gap-4" id="editor-top-bar">
-        <div className="flex items-center space-x-3 flex-1 min-w-0">
-          {isSidebarCollapsed && (
+    <div className="flex-1 flex bg-[#0c0d12] text-slate-100 overflow-hidden relative" id="editor-active-container">
+      
+      {/* 2-Column inner layout: Center Workspace + Right details Panel */}
+      <div className="flex-1 flex flex-col overflow-hidden border-r border-[#151720]">
+        
+        {/* Tiny clean top toolbar bar */}
+        <div className="px-6 py-3.5 border-b border-[#14161f] bg-[#0c0d12] flex items-center justify-between gap-4" id="editor-top-bar">
+          <div className="flex items-center space-x-3.5 min-w-0 flex-1">
+            {isSidebarCollapsed && (
+              <button
+                type="button"
+                onClick={() => setIsSidebarCollapsed(false)}
+                className="p-1.5 rounded-md hover:bg-[#181a23] border border-[#1b1d26] text-slate-400 hover:text-slate-100 transition-colors cursor-pointer shrink-0"
+                title="Expand Sidebar"
+              >
+                <Menu className="h-4 w-4" />
+              </button>
+            )}
+
+            <form onSubmit={handleTitleSubmit} className="flex-1 flex items-center space-x-2.5">
+              <input
+                type="text"
+                value={localTitle}
+                onChange={(e) => setLocalTitle(e.target.value)}
+                onBlur={() => localTitle.trim() && onTitleChange(localTitle.trim())}
+                disabled={!canEdit}
+                className="font-sans font-medium text-sm bg-transparent border-b border-transparent hover:border-slate-800 focus:border-slate-700 px-1 py-0.5 text-slate-150 focus:outline-none max-w-xs truncate"
+                title="Edit document title"
+                id="editor-title-field"
+              />
+              {!canEdit && (
+                <span className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[9px] uppercase font-mono bg-slate-900 border border-slate-800 text-slate-500">
+                  <Lock className="h-2.5 w-2.5" />
+                  <span>Read Only</span>
+                </span>
+              )}
+            </form>
+          </div>
+
+          {/* Top diagnostic indicators / Trigger buttons to slide-in Right drawer detail column */}
+          <div className="flex items-center space-x-1.5" id="top-bar-tabs">
             <button
               type="button"
-              onClick={() => setIsSidebarCollapsed(false)}
-              className="p-1.5 rounded-md bg-slate-900 hover:bg-slate-850 border border-slate-800 text-cyan-400 hover:text-cyan-350 transition-colors mr-1 cursor-pointer flex items-center justify-center shrink-0"
-              title="Expand Sidebar"
-              id="expand-sidebar-bar-btn"
-            >
-              <Menu className="h-4 w-4" />
-            </button>
-          )}
-
-          <form onSubmit={handleTitleSubmit} className="flex-1 flex items-center space-x-2">
-            <input
-              type="text"
-              value={localTitle}
-              onChange={(e) => setLocalTitle(e.target.value)}
-              onBlur={() => localTitle.trim() && onTitleChange(localTitle.trim())}
-              disabled={!canEdit}
-              className={`font-sans font-semibold text-lg bg-transparent hover:bg-slate-900 focus:bg-slate-900 border border-transparent hover:border-slate-800 rounded px-2 py-0.5 text-slate-100 focus:outline-none focus:ring-1 focus:ring-cyan-500 max-w-md w-full truncate ${
-                !canEdit ? 'opacity-85 cursor-not-allowed' : ''
+              onClick={() => {
+                setDrawerTab('share');
+                setIsRightDrawerOpen(!isRightDrawerOpen);
+              }}
+              className={`p-1 px-2 text-xs font-semibold rounded-md border transition-all flex items-center gap-1 cursor-pointer ${
+                isRightDrawerOpen && drawerTab === 'share'
+                  ? 'bg-[#1c1e26] border-slate-700 text-slate-200'
+                  : 'bg-transparent border-transparent text-slate-450 hover:text-slate-200'
               }`}
-              title="Edit document title"
-              id="editor-title-field"
-            />
-            {!canEdit && (
-              <span className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] uppercase font-mono bg-rose-950/50 border border-rose-800 text-rose-400">
-                <Lock className="h-2.5 w-2.5" />
-                <span>Read Only</span>
+              title="Share & permissions settings"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">Share</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDrawerTab('info');
+                setIsRightDrawerOpen(!isRightDrawerOpen);
+              }}
+              className={`p-1 px-2 text-xs font-semibold rounded-md border transition-all flex items-center gap-1 cursor-pointer ${
+                isRightDrawerOpen && drawerTab === 'info'
+                  ? 'bg-[#1c1e26] border-slate-700 text-slate-200'
+                  : 'bg-transparent border-transparent text-slate-450 hover:text-slate-200'
+              }`}
+              title="Document settings & metadata"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">Settings</span>
+            </button>
+          </div>
+        </div>        {/* New Dedicated Sub-Header: View, Edit, and Save dropdown menu below main header */}
+        <div className="px-6 py-1.5 border-b border-[#14161f] bg-[#090a0e] flex items-center justify-between gap-4 animate-fadeIn" id="editor-sub-bar">
+          <div className="flex items-center space-x-2">
+            
+            {/* Unified aesthetic icons group: Eye, Edit, Save */}
+            <div className="flex items-center space-x-1 bg-[#12141a] p-0.5 rounded-md border border-[#1d1f27]">
+              <button
+                onClick={() => {
+                  setActiveMode('view');
+                  setShowSaveDropdown(false);
+                }}
+                type="button"
+                className={`p-1.5 rounded transition-all cursor-pointer ${
+                  activeMode === 'view'
+                    ? 'bg-[#1e2029] text-white border border-slate-700 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-[#161821]'
+                }`}
+                title="View Mode"
+              >
+                <Eye className="h-4 w-4" />
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveMode('edit');
+                  setShowSaveDropdown(false);
+                }}
+                type="button"
+                className={`p-1.5 rounded transition-all cursor-pointer ${
+                  activeMode === 'edit'
+                    ? 'bg-[#1e2029] text-white border border-slate-700 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-[#161821]'
+                }`}
+                title="Edit Mode"
+              >
+                <Edit3 className="h-4 w-4" />
+              </button>
+
+              {/* Save Options trigger with dropdown */}
+              <div className="relative inline-block" ref={saveDropdownRef} id="save-options-dropdown-container">
+                <button
+                  onClick={() => setShowSaveDropdown(!showSaveDropdown)}
+                  type="button"
+                  className={`p-1.5 rounded transition-all cursor-pointer flex items-center space-x-0.5 ${
+                    showSaveDropdown
+                      ? 'bg-[#1e2029] text-white border border-slate-700'
+                      : 'text-slate-450 hover:text-slate-200 hover:bg-[#161821]'
+                  }`}
+                  title="Save & Export Options"
+                >
+                  <Save className="h-4 w-4" />
+                  <ChevronDown className="h-3 w-3 text-slate-500" />
+                </button>
+
+                {showSaveDropdown && (
+                  <div className="absolute left-0 mt-2 w-52 bg-[#12141a] border border-[#232631] rounded-lg shadow-2xl z-50 py-1 animate-fadeIn font-sans">
+                    {!isPromptingSaveAs ? (
+                      <>
+                        <button
+                          onClick={() => {
+                            setShowSaveDropdown(false);
+                            setSaveBannerMessage('Autosaved Clean Draft');
+                            setTimeout(() => setSaveBannerMessage(null), 3500);
+                          }}
+                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2"
+                        >
+                          <Save className="h-3 w-3 text-slate-500" />
+                          <span>Save Draft</span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setSaveAsTitle(document.title.replace(/\.[^/.]+$/, "") + " - Copy");
+                            setIsPromptingSaveAs(true);
+                          }}
+                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2"
+                        >
+                          <Share2 className="h-3 w-3 text-slate-500" />
+                          <span>Save As (Duplicate)</span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setShowSaveDropdown(false);
+                            if (onSaveAndExit) onSaveAndExit();
+                          }}
+                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2 border-t border-[#1d1f27]"
+                        >
+                          <FileText className="h-3 w-3 text-slate-500" />
+                          <span>Save and Exit</span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setShowSaveDropdown(false);
+                            onExportPDF(document);
+                          }}
+                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2 border-t border-[#1d1f27]"
+                        >
+                          <Download className="h-3 w-3 text-slate-500" />
+                          <span>Convert to PDF</span>
+                        </button>
+                      </>
+                    ) : (
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          if (saveAsTitle.trim() && onSaveAs) {
+                            onSaveAs(document, saveAsTitle.trim());
+                            setIsPromptingSaveAs(false);
+                            setShowSaveDropdown(false);
+                            setSaveAsTitle('');
+                          }
+                        }}
+                        className="p-3 space-y-2"
+                      >
+                        <p className="text-[10px] text-slate-500 font-mono">NEW COPY FILE NAME:</p>
+                        <input
+                          type="text"
+                          value={saveAsTitle}
+                          onChange={(e) => setSaveAsTitle(e.target.value)}
+                          placeholder="Name..."
+                          className="w-full bg-[#181a22] text-slate-100 placeholder-slate-600 border border-[#232631] rounded p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-700 font-sans"
+                          autoFocus
+                          required
+                        />
+                        <div className="flex gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setIsPromptingSaveAs(false)}
+                            className="flex-1 py-1 text-[10px] bg-transparent text-slate-400 hover:text-white rounded"
+                          >
+                            Back
+                          </button>
+                          <button
+                            type="submit"
+                            className="flex-1 py-1 text-[10px] bg-slate-200 text-slate-950 font-bold rounded hover:bg-white transition-colors"
+                          >
+                            Duplicate
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Undo/Redo quick operations */}
+            {activeMode === 'edit' && canEdit && (
+              <div className="hidden sm:flex items-center space-x-0.5 border-l border-[#1a1c25] pl-2.5" id="subbar-undo-redo-ctrl">
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  disabled={historyIndex <= 0}
+                  className={`p-1 rounded transition-colors ${
+                    historyIndex > 0 ? 'text-slate-300 hover:bg-[#151720]' : 'text-slate-650 cursor-not-allowed'
+                  }`}
+                  title="Undo last modification"
+                >
+                  <CornerUpLeft className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  disabled={historyIndex >= history.length - 1}
+                  className={`p-1 rounded transition-colors ${
+                    historyIndex < history.length - 1 ? 'text-slate-300 hover:bg-[#151720]' : 'text-slate-650 cursor-not-allowed'
+                  }`}
+                  title="Redo modification"
+                >
+                  <CornerUpRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center space-x-3">
+            {saveBannerMessage && (
+              <span className="text-[10px] text-emerald-400 animate-fadeIn font-mono bg-[#111915] border border-emerald-900/30 px-1.5 py-0.5 rounded">
+                ✓ {saveBannerMessage}
               </span>
             )}
-          </form>
-        </div>
-
-        {/* 4 Core Modes Tabs Nav */}
-        <div className="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800" id="mode-tab-bar">
-          <button
-            onClick={() => setActiveMode('view')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-              activeMode === 'view'
-                ? 'bg-slate-800 text-cyan-400 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-            id="tab-mode-view"
-          >
-            <Eye className="h-3.5 w-3.5" />
-            <span>View</span>
-          </button>
-
-          <button
-            onClick={() => setActiveMode('edit')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-              activeMode === 'edit'
-                ? 'bg-slate-800 text-cyan-400 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-            id="tab-mode-edit"
-          >
-            <Edit3 className="h-3.5 w-3.5" />
-            <span>Edit</span>
-          </button>
-
-          <button
-            onClick={() => setActiveMode('sync')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-              activeMode === 'sync'
-                ? 'bg-slate-800 text-cyan-400 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-            id="tab-mode-sync"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${document.syncStatus === 'pending' ? 'animate-spin text-amber-500' : ''}`} />
-            <span>Sync</span>
-          </button>
-
-          <button
-            onClick={() => setActiveMode('share')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-              activeMode === 'share'
-                ? 'bg-slate-800 text-cyan-400 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-            id="tab-mode-share"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            <span>Share</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Screen Workspace Views */}
-      <div className="flex-1 overflow-y-auto" id="workspace-dynamic-panel">
-        
-        {/* CHECK CAN VIEW PERMISSION */}
-        {!canView ? (
-          <div className="h-full flex flex-col items-center justify-center p-8 text-center" id="permission-blocked">
-            <div className="max-w-md p-6 border border-rose-900 bg-rose-950/10 rounded-xl space-y-4">
-              <Lock className="h-10 w-10 text-rose-500 mx-auto" />
-              <h2 className="text-base font-bold text-slate-100">Access Denied</h2>
-              <p className="text-xs text-slate-300 font-sans leading-relaxed">
-                You do not have viewer credentials to access this document. The author has set permissions to private. Switch to an invited user address via the sidebar avatar profile menu to preview.
-              </p>
-            </div>
           </div>
-        ) : (
-          <>
-            {/* 1. VIEW MODE SCREEN */}
-            {activeMode === 'view' && (
-              <div className="p-8 max-w-3xl mx-auto space-y-6" id="view-mode-canvas">
-                {/* Header Metadata Ribbon */}
-                <div className="flex items-center justify-between text-xs text-slate-500 font-mono pb-4 border-b border-slate-900">
-                  <div className="flex gap-4">
-                    <span>Format: <b className="text-slate-300 uppercase">{document.type}</b></span>
-                    <span>Size: <b className="text-slate-300">{(getByteSize(document.content) / 1024).toFixed(2)} KB</b></span>
-                  </div>
-                  <div>
-                    <button
-                      onClick={() => onExportPDF(document)}
-                      className="flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 font-bold font-mono transition-colors cursor-pointer"
-                      id="export-pdf-doc-action"
-                    >
-                      <Download className="h-3 w-3" />
-                      <span>Convert to PDF</span>
-                    </button>
+        </div>
+
+        {/* Dynamic Canvas Area */}
+        <div className={`flex-1 overflow-y-auto w-full ${activeMode === 'edit' ? 'bg-[#fcfcf9] p-0' : 'bg-[#0a0b0f] p-6 lg:p-12'}`} id="workspace-scroll-wrap">
+          
+          {/* Permission Block message */}
+          {!canView ? (
+            <div className="h-full flex items-center justify-center text-center p-8">
+              <div className="max-w-md p-6 bg-[#12141a]/60 border border-slate-800 rounded-xl space-y-4">
+                <Lock className="h-8 w-8 text-slate-500 mx-auto" />
+                <h2 className="text-sm font-semibold text-slate-200">Private Document</h2>
+                <p className="text-xs text-slate-400 font-sans leading-relaxed">
+                  The document owner has set link privileges to strict private. Swap to an invited collaborator account or request access to start viewing files.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* 1. VIEW MODE SCREEN: Deep, matte, calm, lots of whitespace */}
+              {activeMode === 'view' && (
+                <div className="max-w-3xl mx-auto space-y-8 animate-fadeIn text-left" id="view-mode-canvas">
+                  
+                  {/* Narrow elegant view text layouts */}
+                  <div className="prose prose-slate prose-invert max-w-none">
+                    {document.type === 'pdf' ? (
+                      <div className="border border-slate-800/40 rounded-xl p-8 bg-[#12141a]/40 text-left space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-800/40 pb-3">
+                          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono">PDF Parser View</h4>
+                          <span className="text-[10px] font-mono text-slate-500">{(document.size/1024).toFixed(1)} KB</span>
+                        </div>
+                        <p className="text-xs text-slate-400 leading-normal">
+                          Displaying imported binary metadata text contents:
+                        </p>
+                        <div className="font-mono text-xs text-slate-300 leading-relaxed overflow-x-auto whitespace-pre-wrap">
+                          {document.content}
+                        </div>
+                      </div>
+                    ) : document.type === 'docx' && document.content.includes('<') ? (
+                      <div 
+                        className="text-slate-350 text-[13.5px] leading-relaxed space-y-3"
+                        dangerouslySetInnerHTML={{ __html: document.content }}
+                      />
+                    ) : (
+                      renderMarkdown(document.content)
+                    )}
                   </div>
                 </div>
+              )}
 
-                {document.type === 'pdf' ? (
-                  <div className="border border-slate-800 rounded-lg p-10 bg-slate-900/60 text-center space-y-4">
-                    <div className="h-12 w-12 rounded bg-rose-950 flex items-center justify-center text-rose-400 mx-auto">
-                      <FileText className="h-6 w-6" />
-                    </div>
-                    <h3 className="text-sm font-bold text-slate-200">{document.title}</h3>
-                    <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                      PDF loading and rendering initialized using high-performance DOM lazy structures.
-                    </p>
-                    <div className="p-4 bg-slate-950 rounded border border-slate-850 text-left font-mono text-xs text-slate-300 overflow-auto whitespace-pre-wrap">
-                      {document.content}
-                    </div>
-                  </div>
-                ) : document.type === 'docx' && document.content.includes('<') ? (
-                  // Render parsed DOCX HTML safely (Mammoth generated)
-                  <div 
-                    className="prose prose-invert max-w-none text-slate-300 font-sans leading-relaxed space-y-3"
-                    dangerouslySetInnerHTML={{ __html: document.content }}
-                    id="docx-rendered-html"
-                  />
-                ) : document.type === 'md' ? (
-                  // Custom Markdown Parser
-                  parseMarkdownToReact(document.content)
-                ) : (
-                  // Standard Monospace Text View
-                  <div className="font-mono text-sm leading-6 whitespace-pre-wrap text-slate-300 bg-slate-900/40 p-6 rounded-lg border border-slate-900 overflow-auto">
-                    {document.content}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 2. EDIT MODE SCREEN */}
-            {activeMode === 'edit' && (
-              <div className="h-full flex flex-col" id="edit-mode-canvas">
-                {/* Check Edit Permissions Lock */}
-                {!canEdit ? (
-                  <div className="p-8 border-b border-rose-950 bg-rose-950/10 text-rose-400 flex items-center space-x-3 text-xs font-medium">
-                    <AlertTriangle className="h-4 w-4 shrink-0" />
-                    <span>Editing permission is locked because you do not own this document and have been granted <b>Read-Only (Viewer)</b> privileges. Change login email in sidebar profile to override.</span>
-                  </div>
-                ) : (
-                  <div className="p-2 border-b border-slate-900 bg-slate-950/70 flex items-center space-x-1 overflow-x-auto" id="editor-toolbar">
-                    <button
-                      onClick={() => injectFormatting('h1')}
-                      className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-colors"
-                      title="Heading 1"
-                    >
-                      <Heading1 className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => injectFormatting('h2')}
-                      className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-colors"
-                      title="Heading 2"
-                    >
-                      <Heading2 className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => injectFormatting('bold')}
-                      className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-colors"
-                      title="Bold"
-                    >
-                      <Bold className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => injectFormatting('italic')}
-                      className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-colors"
-                      title="Italic"
-                    >
-                      <Italic className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => injectFormatting('list')}
-                      className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-colors"
-                      title="Bullet Point List"
-                    >
-                      <List className="h-4 w-4" />
-                    </button>
-                    
-                    <span className="h-4 w-px bg-slate-800 mx-2" />
-                    
-                    <span className="text-[10px] font-mono text-slate-500 flex items-center gap-1">
-                      <Save className="h-3 w-3 text-emerald-500 animate-pulse" />
-                      <span>Autosaves drafts offline</span>
-                    </span>
-                  </div>
-                )}
-
-                <div className="flex-1 min-h-0 relative">
-                  <textarea
-                    ref={textareaRef}
-                    value={document.content}
-                    onChange={(e) => onContentChange(e.target.value)}
-                    disabled={!canEdit}
-                    placeholder="Start typing document body in Markdown or raw format here..."
-                    className="absolute inset-0 w-full h-full p-8 bg-transparent text-slate-300 leading-relaxed text-sm font-sans focus:outline-none resize-none overflow-y-auto"
-                    id="editor-textarea-field"
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* 3. SYNC MODE SCREEN */}
-            {activeMode === 'sync' && (
-              <div className="p-8 max-w-2xl mx-auto space-y-6" id="sync-mode-canvas">
-                <div className="border border-slate-800 bg-slate-900/40 rounded-xl p-6 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-sans font-bold text-slate-100 flex items-center gap-2">
-                      <RefreshCw className="h-4 w-4 text-cyan-400" />
-                      Offline Workstation & Server Sync Queue
-                    </h3>
-                    <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-mono border ${
-                      isOffline 
-                        ? 'bg-amber-950/50 border-amber-800 text-amber-400'
-                        : 'bg-emerald-950/50 border-emerald-800 text-emerald-400'
-                    }`}>
-                      {isOffline ? 'Offline Draft Workspace' : 'Linked to Cloud-Sync'}
-                    </span>
-                  </div>
-
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Under offline-first design patterns, edits made offline are registered instantly in local metadata queues. Once you reconnect to the sync servers, modifications reconcile with documents stored upon database.
-                  </p>
-
-                  <div className="space-y-2 pt-2">
-                    <div className="flex justify-between text-xs py-1.5 border-b border-slate-850">
-                      <span className="text-slate-500">Document Sync State</span>
-                      <span className={`font-mono font-bold capitalize ${
-                        document.syncStatus === 'synced' ? 'text-emerald-400' :
-                        document.syncStatus === 'conflict' ? 'text-rose-400 animate-pulse' :
-                        'text-amber-400'
-                      }`}>
-                        {document.syncStatus}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between text-xs py-1.5 border-b border-slate-850">
-                      <span className="text-slate-500">Local Modified Draft</span>
-                      <span className="font-mono text-slate-300">{document.syncStatus === 'synced' ? 'Unmodified' : 'Yes (Saved Locally)'}</span>
-                    </div>
-
-                    <div className="flex justify-between text-xs py-1.5 border-b border-slate-850">
-                      <span className="text-slate-500">Last Database Reconcile</span>
-                      <span className="font-mono text-slate-300">{new Date(document.updatedAt).toLocaleTimeString()}</span>
-                    </div>
-                  </div>
-
-                  {syncFeedback && (
-                    <div className="p-3 bg-cyan-950/40 border border-cyan-800 text-cyan-400 text-xs rounded-lg animate-fadeIn">
-                      {syncFeedback}
+              {/* 2. EDIT MODE SCREEN: stunning soft bone-white page sheet */}
+              {activeMode === 'edit' && (
+                <div className="w-full flex-1 flex flex-col animate-fadeIn" id="edit-mode-canvas">
+                  
+                  {/* Warning on non-owners editing role */}
+                  {!canEdit && (
+                    <div className="max-w-3xl mx-auto w-full mt-4 p-3.5 bg-rose-950/20 border border-rose-900/30 text-rose-400 rounded-lg flex items-center space-x-2.5 text-xs font-sans">
+                      <AlertTriangle className="h-4 w-4 shrink-0" />
+                      <span>Editing privileges are closed. This document is set to Read-Only for your credentials.</span>
                     </div>
                   )}
 
-                  {/* Sync Action Controls */}
-                  <div className="flex gap-3 justify-end pt-2">
-                    <button
-                      onClick={executeSync}
-                      disabled={isOffline}
-                      className={`flex items-center space-x-1.5 px-4 py-2 rounded text-xs font-semibold cursor-pointer ${
-                        isOffline 
-                          ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-850' 
-                          : 'bg-cyan-600 hover:bg-cyan-500 text-white transition-colors'
-                      }`}
-                      id="trigger-reconciliation-btn"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      <span>Trigger Database Sync</span>
-                    </button>
+                  {/* Core physical card writing sheet! Beautiful cream white panel is now full-screen edge-to-edge */}
+                  <div 
+                    className={`w-full flex-1 flex flex-col min-h-[calc(100vh-140px)] bg-[#fcfcf9] text-slate-900 ${
+                      !canEdit ? 'opacity-80 pointer-events-none' : ''
+                    }`}
+                  >
+                    
+                    {/* Small layout formatting toolbar helper inside the card */}
+                    {canEdit && (
+                      <div className="border-b border-slate-200 bg-slate-50/60 sticky top-0 z-10" id="card-inner-toolbar">
+                        <div className="max-w-3xl mx-auto px-6 py-2.5 flex items-center justify-between overflow-x-auto">
+                          <div className="flex items-center space-x-1.5">
+                            <button
+                              type="button"
+                              onClick={() => injectFormatting('h1')}
+                              className="p-1 rounded hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                              title="Insert Main Title"
+                            >
+                              <Heading1 className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => injectFormatting('h2')}
+                              className="p-1 rounded hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                              title="Insert Subheading"
+                            >
+                              <Heading2 className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => injectFormatting('bold')}
+                              className="p-1.5 rounded hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                              title="Make selection Bold"
+                            >
+                              <Bold className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => injectFormatting('italic')}
+                              className="p-1.5 rounded hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                              title="Make selection Italic"
+                            >
+                              <Italic className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => injectFormatting('list')}
+                              className="p-1.5 rounded hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                              title="Inject Checklist"
+                            >
+                              <List className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+
+                          <div className="text-[10px] uppercase font-mono tracking-wider font-bold text-slate-400">
+                            Autosaved Locally
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Text writing container - Centered with max-w-3xl for optimal readable column bounds */}
+                    <div className="flex-1 max-w-3xl mx-auto w-full p-8 md:p-12 flex flex-col">
+                      <textarea
+                        ref={textareaRef}
+                        value={document.content}
+                        onChange={(e) => handleContentEdit(e.target.value)}
+                        disabled={!canEdit}
+                        placeholder="Begin writing text thoughts elegantly here..."
+                        className="w-full flex-1 bg-transparent text-slate-800 leading-relaxed text-[15.5px] font-sans focus:outline-none resize-none overflow-y-auto border-0 focus:ring-0 p-0 min-h-[500px]"
+                        id="document-editor-textarea"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* RIGHT DRAWER: slides in cleanly, holds access level, details, conversion action configs */}
+      {isRightDrawerOpen && (
+        <div 
+          className="w-72 md:w-80 border-l border-[#1d1f27] bg-[#12141a] h-full flex flex-col shrink-0 animate-slideLeft z-30 font-sans"
+          id="right-drawer-container"
+        >
+          {/* Drawer Header Tabs */}
+          <div className="border-b border-[#1d1f27] bg-[#101217] p-3 flex items-center justify-between">
+            <div className="flex bg-[#181a22] p-0.5 rounded-lg border border-[#21232e]">
+              <button
+                type="button"
+                onClick={() => setDrawerTab('info')}
+                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md ${
+                  drawerTab === 'info' ? 'bg-[#222530] text-white' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Settings
+              </button>
+              <button
+                type="button"
+                onClick={() => setDrawerTab('share')}
+                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md ${
+                  drawerTab === 'share' ? 'bg-[#222530] text-white' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Sharing
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsRightDrawerOpen(false)}
+              className="p-1.5 rounded hover:bg-slate-900 text-slate-400 hover:text-slate-200"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Drawer Tab Content Scroll Area */}
+          <div className="flex-1 overflow-y-auto p-5 space-y-5 text-slate-300">
+            
+            {/* FILE INFO TAB */}
+            {drawerTab === 'info' && (
+              <div className="space-y-4 text-xs">
+                <div className="space-y-1">
+                  <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Metadata</h4>
+                  <div className="bg-[#181a22] p-3 rounded-lg border border-[#1e2029]/60 space-y-2.5 font-mono text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Owner:</span>
+                      <span className="text-slate-200 truncate max-w-[120px]">{document.permissions.owner}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">File structure:</span>
+                      <span className="text-slate-200 uppercase">{document.type} format</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Caret size:</span>
+                      <span className="text-slate-200">{(getByteSize(document.content)/1024).toFixed(2)} KB</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Sync state:</span>
+                      <span className={`capitalize font-semibold ${
+                        document.syncStatus === 'synced' ? 'text-emerald-400' : 'text-amber-500 animate-pulse'
+                      }`}>{document.syncStatus}</span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Simulated Synchronization Collision Panel */}
+                <div className="space-y-2 pt-1">
+                  <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Export Conversion</h4>
+                  <button
+                    onClick={() => {
+                      onExportPDF(document);
+                    }}
+                    type="button"
+                    className="w-full py-2 px-3 rounded-lg border border-slate-700 bg-transparent text-slate-200 hover:bg-slate-900 text-xs font-semibold cursor-pointer transition-colors flex items-center justify-center space-x-2"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span>Compile PDF download</span>
+                  </button>
+                </div>
+
+                {/* Cloud operations triggers inside file details drawer */}
+                <div className="space-y-2.5 pt-2 border-t border-[#1d1f27]">
+                  <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Synchronization</h4>
+                  <button
+                    onClick={() => onTriggerSync(document.id)}
+                    disabled={isOffline}
+                    className={`w-full py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center space-x-2 ${
+                      isOffline 
+                        ? 'bg-[#181a22] text-slate-500 border border-slate-850 cursor-not-allowed' 
+                        : 'bg-slate-200 hover:bg-white text-slate-950 cursor-pointer'
+                    }`}
+                  >
+                    <span>Trigger Manual Sync</span>
+                  </button>
+                </div>
+
+                {/* Conflict resolution module (ONLY visualizes if active conflict detected!) */}
                 {document.syncStatus === 'conflict' && (
-                  <div className="border border-rose-900 bg-rose-950/10 rounded-xl p-5 space-y-4 animate-scaleUp">
-                    <div className="flex items-center space-x-2 text-rose-400 font-bold text-xs uppercase font-mono">
-                      <AlertTriangle className="h-4 w-4" />
-                      <span>Reconciliation Collision Resolved</span>
-                    </div>
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      While you were working offline, another user pushed conflicting modifications on the cloud database. Document Yanga blocks automated overwriting, giving you side-by-side reconciliation comparison choice:
+                  <div className="p-3 bg-rose-950/20 border border-rose-900/30 rounded-lg space-y-3.5 mt-2">
+                    <p className="text-[10px] text-rose-400 font-mono flex items-center gap-1 font-bold">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <span>Surgical Conflict Queue</span>
+                    </p>
+                    <p className="text-[11px] text-slate-400 leading-normal">
+                      Another colleague has edited the server version. Select choice:
                     </p>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono pt-2">
-                      <div className="space-y-1.5">
-                        <span className="block font-sans font-semibold text-amber-400">Your Offline Draft (Local)</span>
-                        <div className="p-3 bg-slate-950 border border-slate-850 rounded text-[10px] text-slate-300 h-32 overflow-y-auto leading-relaxed">
-                          {document.content}
-                        </div>
-                        <button
-                          onClick={() => onResolveConflict(document.id, document.content)}
-                          className="w-full bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-800 py-1.5 rounded-md transition-colors font-medium text-[11px] cursor-pointer"
-                          id="keep-local-version-action"
-                        >
-                          Overrule with Local Version
-                        </button>
-                      </div>
+                    <button
+                      type="button"
+                      onClick={() => onResolveConflict(document.id, document.content)}
+                      className="w-full bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 py-1 rounded text-[10px] font-semibold border border-amber-800"
+                    >
+                      Enforce Your Local Draft
+                    </button>
 
-                      <div className="space-y-1.5">
-                        <span className="block font-sans font-semibold text-cyan-400">Server State (Remote)</span>
-                        <div className="p-3 bg-slate-950 border border-slate-850 rounded text-[10px] text-slate-300 h-32 overflow-y-auto leading-relaxed">
-                          {document.originalContent || 'Simulated Conflict Content loaded from Remote Workspace database...'}
-                        </div>
-                        <button
-                          onClick={() => onResolveConflict(document.id, document.originalContent || 'Default Conflict Value')}
-                          className="w-full bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-300 border border-cyan-800 py-1.5 rounded-md transition-colors font-medium text-[11px] cursor-pointer"
-                          id="accept-server-version-action"
-                        >
-                          Accept Remote Server Content
-                        </button>
-                      </div>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onResolveConflict(document.id, document.originalContent || '')}
+                      className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-1 rounded text-[10px] font-semibold"
+                    >
+                      Receive Remote Cloud Version
+                    </button>
                   </div>
                 )}
               </div>
             )}
 
-            {/* 4. SHARE MODE SCREEN */}
-            {activeMode === 'share' && (
-              <div className="p-8 max-w-2xl mx-auto space-y-6" id="share-mode-canvas">
-                <div className="border border-slate-800 bg-slate-900/40 rounded-xl p-6 space-y-5">
-                  <h3 className="font-sans font-bold text-slate-100 flex items-center gap-2 border-b border-slate-850 pb-3">
-                    <Shield className="h-4 w-4 text-cyan-400" />
-                    Access Permissions & Link Sharing Controls
-                  </h3>
-
-                  {/* Public Link Toggle Selection */}
-                  <div className="space-y-2">
-                    <label className="block text-[11px] font-mono uppercase tracking-wider text-slate-400">
-                      External Link Access Control
-                    </label>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2" id="link-sharing-controls">
-                      {(['private', 'view', 'edit'] as SharingPermission[]).map((mode) => (
-                        <button
-                          key={mode}
-                          onClick={() => isOwner && onUpdatePermissions(document.id, { linkSharing: mode })}
-                          disabled={!isOwner}
-                          className={`p-3 rounded-lg border text-left flex flex-col justify-between h-20 transition-all ${
-                            !isOwner ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'
-                          } ${
-                            document.permissions.linkSharing === mode
-                              ? 'bg-cyan-950/40 border-cyan-500 text-cyan-300'
-                              : 'bg-slate-900 border-slate-850 text-slate-400 hover:text-slate-300'
-                          }`}
-                          id={`link-share-mode-${mode}`}
-                        >
-                          <span className="text-xs font-bold capitalize">{mode} Link</span>
-                          <span className="text-[10px] text-slate-400 leading-tight">
-                            {mode === 'private' && 'Only specified members can view.'}
-                            {mode === 'view' && 'Anyone with the URL can read.'}
-                            {mode === 'edit' && 'Anyone with the URL can edit.'}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+            {/* SHARING & PERMISSIONS TAB */}
+            {drawerTab === 'share' && (
+              <div className="space-y-4 text-xs">
+                {/* External link access logic */}
+                <div className="space-y-2">
+                  <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Link Exposure</h4>
+                  <div className="space-y-1.5">
+                    {(['private', 'view', 'edit'] as SharingPermission[]).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => isOwner && onUpdatePermissions(document.id, { linkSharing: mode })}
+                        disabled={!isOwner}
+                        className={`w-full text-left p-2.5 rounded-lg border text-xs flex flex-col gap-0.5 transition-all ${
+                          !isOwner ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'
+                        } ${
+                          document.permissions.linkSharing === mode
+                            ? 'bg-slate-800/80 border-slate-600 text-slate-100'
+                            : 'bg-[#181a22] border-transparent text-slate-400 hover:text-slate-300'
+                        }`}
+                      >
+                        <span className="font-semibold capitalize text-slate-200">{mode} link access</span>
+                        <span className="text-[10px] text-slate-550 leading-tight">
+                          {mode === 'private' ? 'Access restricted to specified members.' :
+                           mode === 'view' ? 'Anyone with the link can view.' : 'Anyone with the link can edit.'}
+                        </span>
+                      </button>
+                    ))}
                   </div>
+                </div>
 
-                  {/* Collaborator Management Grid */}
-                  <div className="space-y-3 pt-3">
-                    <label className="block text-[11px] font-mono uppercase tracking-wider text-slate-400">
-                      Enlist Invited Members
-                    </label>
-
-                    {/* Invite Input form panel */}
-                    {isOwner ? (
-                      <div className="flex gap-2" id="collaborator-invite-form">
-                        <input
-                          type="email"
-                          placeholder="Email address (e.g. editor@yanga.app)..."
-                          value={inviteEmail}
-                          onChange={(e) => setInviteEmail(e.target.value)}
-                          className="flex-1 bg-slate-950 border border-slate-850 rounded px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                          id="invite-email-input"
-                        />
+                {/* Invited team members */}
+                <div className="space-y-2.5 pt-2 border-t border-[#1d1f27]">
+                  <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Enlisted Collaborators</h4>
+                  
+                  {isOwner ? (
+                    <div className="space-y-1.5">
+                      <input
+                        type="email"
+                        placeholder="Invite email..."
+                        value={inviteEmail}
+                        onChange={(e) => setInviteEmail(e.target.value)}
+                        className="w-full bg-[#181a22] border border-[#232631] rounded p-1.5 text-xs text-slate-250 focus:outline-none"
+                      />
+                      <div className="flex gap-2">
                         <select
                           value={inviteRole}
                           onChange={(e) => setInviteRole(e.target.value as 'view' | 'edit')}
-                          className="bg-slate-950 border border-slate-850 rounded text-xs px-2 text-slate-300 outline-none"
-                          id="invite-role-select"
+                          className="flex-1 bg-[#181a22] border border-[#232631] rounded text-[11px] px-1 text-slate-300"
                         >
                           <option value="view">Viewer</option>
                           <option value="edit">Editor</option>
                         </select>
                         <button
+                          type="button"
                           onClick={() => {
                             if (!inviteEmail.trim()) return;
                             const currentList = [...document.permissions.sharedWith];
@@ -628,65 +888,55 @@ export default function Editor({
                             onUpdatePermissions(document.id, { sharedWith: currentList });
                             setInviteEmail('');
                           }}
-                          className="bg-cyan-600 hover:bg-cyan-500 text-white rounded px-4 text-xs font-semibold cursor-pointer"
-                          id="add-member-btn"
+                          className="bg-slate-250 hover:bg-white text-slate-950 px-3 py-1 text-xs font-semibold rounded cursor-pointer"
                         >
-                          Invite
+                          Add
                         </button>
                       </div>
-                    ) : (
-                      <p className="text-xs text-slate-500 bg-slate-950 p-3 rounded">
-                        Only the owner (<b>{document.permissions.owner}</b>) can invite users.
-                      </p>
-                    )}
-
-                    {/* Member List */}
-                    <div className="space-y-1.5 divide-y divide-slate-900 border border-slate-850 rounded-lg p-3 bg-slate-950/20" id="collaborator-invited-list">
-                      <div className="flex justify-between items-center text-xs pb-2 font-mono text-slate-500">
-                        <span>Invited Member Account</span>
-                        <span>Role Privilege</span>
-                      </div>
-                      
-                      <div className="flex justify-between items-center text-xs py-2 bg-slate-900/10 px-1 rounded-sm">
-                        <div className="flex items-center space-x-2">
-                          <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
-                          <span>{document.permissions.owner}</span>
-                        </div>
-                        <span className="font-mono text-cyan-400 font-bold">Owner</span>
-                      </div>
-
-                      {document.permissions.sharedWith.length === 0 ? (
-                        <p className="text-center py-4 text-xs text-slate-600">No other members listed.</p>
-                      ) : (
-                        document.permissions.sharedWith.map((collab, index) => (
-                          <div key={index} className="flex justify-between items-center text-xs py-2.5 px-1 hover:bg-slate-900/10 transition-colors">
-                            <span>{collab.email}</span>
-                            <div className="flex items-center space-x-2">
-                              <span className="font-mono capitalize text-slate-300">{collab.role}</span>
-                              {isOwner && (
-                                <button
-                                  onClick={() => {
-                                    const nextList = document.permissions.sharedWith.filter(c => c.email !== collab.email);
-                                    onUpdatePermissions(document.id, { sharedWith: nextList });
-                                  }}
-                                  className="text-rose-500 hover:text-rose-400 text-[10px] uppercase font-bold cursor-pointer font-mono"
-                                  id={`remove-member-${collab.email}`}
-                                >
-                                  Revoke
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        ))
-                      )}
                     </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-500">Only the owner ({document.permissions.owner}) can invite members.</p>
+                  )}
+
+                  {/* Collaborators list view */}
+                  <div className="space-y-1.5 pt-2">
+                    <div className="flex justify-between items-center text-[10px] font-mono text-slate-500 pb-1 border-b border-[#21232e]">
+                      <span>Account</span>
+                      <span>Privilege</span>
+                    </div>
+
+                    <div className="flex justify-between items-center text-xs py-1">
+                      <span className="truncate max-w-[130px] font-mono text-slate-400">{document.permissions.owner}</span>
+                      <span className="text-slate-500 text-[10px]">Owner</span>
+                    </div>
+
+                    {document.permissions.sharedWith.map((c, i) => (
+                      <div key={i} className="flex justify-between items-center text-xs py-1">
+                        <span className="truncate max-w-[130px] font-mono text-slate-400">{c.email}</span>
+                        <div className="flex items-center space-x-1.5 text-[10px]">
+                          <span className="capitalize text-slate-500">{c.role}</span>
+                          {isOwner && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextList = document.permissions.sharedWith.filter(item => item.email !== c.email);
+                                onUpdatePermissions(document.id, { sharedWith: nextList });
+                              }}
+                              className="text-rose-500 hover:text-rose-400"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
