@@ -130,11 +130,11 @@ export default function Editor({
     
     const handleScrollEvent = (e: Event) => {
       const target = e.target as HTMLElement;
-      if (!target) return;
+      if (!target || typeof target.scrollTop === 'undefined') return;
       
       const currentScrollTop = target.scrollTop;
       
-      // If we are close or at the very top, make sure everything is visible
+      // If we are close or at the very top of the scrolled element, make sure everything is visible
       if (currentScrollTop <= 10) {
         setHideOnScroll(false);
         lastScrollTop = currentScrollTop;
@@ -146,35 +146,23 @@ export default function Editor({
       // Filter out small scrolling jitters
       if (Math.abs(diff) > 2) {
         if (diff < 0) {
-          // Scrolling UP -> immediately disappear!
-          setHideOnScroll(true);
-        } else {
-          // Scrolling DOWN -> immediately reappear!
+          // Scrolling UP (scrollbar moves up towards 0, scrollTop decreases) -> immediately reappear!
           setHideOnScroll(false);
+        } else {
+          // Scrolling DOWN (scrollbar moves down, scrollTop increases) -> immediately disappear!
+          setHideOnScroll(true);
         }
         lastScrollTop = currentScrollTop;
       }
     };
 
-    const scrollContainer = window.document.getElementById('workspace-scroll-wrap');
-    const textareaContainer = window.document.getElementById('document-editor-textarea');
-    
-    if (scrollContainer) {
-      scrollContainer.addEventListener('scroll', handleScrollEvent, { passive: true });
-    }
-    if (textareaContainer) {
-      textareaContainer.addEventListener('scroll', handleScrollEvent, { passive: true });
-    }
+    // Use capture phase (true) to intercept scroll events dispatched by any scrollable element inside the editor
+    window.addEventListener('scroll', handleScrollEvent, true);
 
     return () => {
-      if (scrollContainer) {
-        scrollContainer.removeEventListener('scroll', handleScrollEvent);
-      }
-      if (textareaContainer) {
-        textareaContainer.removeEventListener('scroll', handleScrollEvent);
-      }
+      window.removeEventListener('scroll', handleScrollEvent, true);
     };
-  }, [activeMode]);
+  }, []);
 
   // Save options dropdown states
   const [showSaveDropdown, setShowSaveDropdown] = useState(false);
@@ -414,7 +402,9 @@ export default function Editor({
         <button
           type="button"
           onClick={toggleFullscreen}
-          className="absolute top-4 right-4 z-50 p-2.5 rounded-full bg-[#181a23]/90 hover:bg-[#202330]/90 text-slate-450 hover:text-slate-100 border border-[#2d313f] hover:border-slate-500/30 transition-all duration-300 shadow-2xl cursor-pointer"
+          className={`absolute top-4 right-4 z-50 p-2.5 rounded-full bg-[#181a23]/90 hover:bg-[#202330]/90 text-slate-450 hover:text-slate-100 border border-[#2d313f] hover:border-slate-500/30 shadow-2xl cursor-pointer transition-all duration-300 ${
+            hideOnScroll ? 'opacity-0 -translate-y-12 pointer-events-none' : 'opacity-100 translate-y-0'
+          }`}
           title="Exit Full Screen"
         >
           <Minimize className="h-5 w-5" />
