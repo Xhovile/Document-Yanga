@@ -7,7 +7,9 @@ import React, { useState, useEffect } from 'react';
 import { 
   loadLocalDocuments, saveLocalDocuments, loadUserAccount, saveUserAccount,
   loadOfflineModeState, saveOfflineModeState, syncDocumentToServer, loadCloudDocuments,
-  saveCloudDocument, getByteSize
+  saveCloudDocument, getByteSize,
+  deleteLocalDocument, saveSingleLocalDocument, getLastOpenedDocumentId, setLastOpenedDocumentId,
+  saveAutosaveBackup, getAutosaveBackup, clearAutosaveBackup, getRecentDocuments
 } from './db';
 import { Document, WorkspaceMode, AppUser, DocumentType } from './types';
 import Sidebar from './components/Sidebar';
@@ -30,28 +32,39 @@ export default function App() {
   const [showSettingsDrawer, setShowSettingsDrawer] = useState<boolean>(false);
   const [compressionEnabled, setCompressionEnabled] = useState<boolean>(true);
   const [lazyLoadLimit, setLazyLoadLimit] = useState<number>(100); // in KB
+  const [autosaveStatus, setAutosaveStatus] = useState<'saved' | 'saving' | 'error' | 'idle'>('saved');
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
 
   // Capture sidebar collapse modifications onto small settings storage
   useEffect(() => {
     localStorage.setItem('yanga_sidebar_collapsed', JSON.stringify(isSidebarCollapsed));
   }, [isSidebarCollapsed]);
 
-  const handleSelectDocument = (doc: Document) => {
+  const handleSelectDocument = async (doc: Document) => {
     const updatedDoc: Document = {
       ...doc,
       lastOpenedAt: Date.now()
     };
     
     // Save last opened doc target ID onto small settings
-    localStorage.setItem('yanga_last_opened_doc_id', doc.id);
+    setLastOpenedDocumentId(doc.id);
+
+    // Save update atomically to persistence layer
+    await saveSingleLocalDocument(updatedDoc);
     
-    const updatedDocs = documents.map((d) => d.id === doc.id ? updatedDoc : d);
-    
-    // Re-index recently opened files order first
-    const sortedDocs = updatedDocs.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
-    
+    // Refresh the local recent list ordering
+    const sortedDocs = await getRecentDocuments();
     setDocuments(sortedDocs);
-    saveLocalDocuments(sortedDocs);
     setActiveDoc(updatedDoc);
     setActiveMode('view');
   };
@@ -59,9 +72,6 @@ export default function App() {
   // Load initial settings and documents
   useEffect(() => {
     const initLoad = async () => {
-      const loadedDocs = await loadLocalDocuments();
-      setDocuments(loadedDocs);
-      
       const loadedUser = loadUserAccount();
       setCurrentUser(loadedUser);
       
@@ -73,14 +83,17 @@ export default function App() {
         setIsSidebarCollapsed(JSON.parse(collapsedStored));
       }
 
+      const loadedDocs = await getRecentDocuments();
+      setDocuments(loadedDocs);
+
       if (loadedDocs.length > 0) {
-        const lastOpenedId = localStorage.getItem('yanga_last_opened_doc_id');
+        const lastOpenedId = getLastOpenedDocumentId();
         const matched = lastOpenedId ? loadedDocs.find(d => d.id === lastOpenedId) : null;
         if (matched) {
           const updatedDoc = { ...matched, lastOpenedAt: Date.now() };
-          const updatedDocs = loadedDocs.map((d) => d.id === matched.id ? updatedDoc : d);
+          await saveSingleLocalDocument(updatedDoc);
+          const updatedDocs = await getRecentDocuments();
           setDocuments(updatedDocs);
-          saveLocalDocuments(updatedDocs);
           setActiveDoc(updatedDoc);
         } else {
           setActiveDoc(loadedDocs[0]);
@@ -104,7 +117,7 @@ export default function App() {
   };
 
   // Creates a new blank template
-  const handleCreateDocument = (type: DocumentType, title: string) => {
+  const handleCreateDocument = async (type: DocumentType, title: string) => {
     const newDocObj: Document = {
       id: `${type}-${Date.now()}`,
       title,
@@ -125,12 +138,11 @@ export default function App() {
     };
     newDocObj.size = getByteSize(newDocObj.content);
 
-    localStorage.setItem('yanga_last_opened_doc_id', newDocObj.id);
+    setLastOpenedDocumentId(newDocObj.id);
 
-    const updated = [newDocObj, ...documents];
-    const sorted = updated.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+    await saveSingleLocalDocument(newDocObj);
+    const sorted = await getRecentDocuments();
     setDocuments(sorted);
-    saveLocalDocuments(sorted);
     setActiveDoc(newDocObj);
     setActiveMode('edit'); // switch to edit directly on creation
 
@@ -153,25 +165,27 @@ export default function App() {
     return `Start typing plain text document specifications...`;
   };
 
-  const handleDeleteDocument = (id: string) => {
-    const updated = documents.filter((doc) => doc.id !== id);
+  const handleDeleteDocument = async (id: string) => {
+    await deleteLocalDocument(id);
+    clearAutosaveBackup(id);
+
+    const updated = await getRecentDocuments();
     setDocuments(updated);
-    saveLocalDocuments(updated);
     
     // Select another document if active got deleted
     if (activeDoc?.id === id) {
       const nextActive = updated.length > 0 ? updated[0] : null;
       setActiveDoc(nextActive);
       if (nextActive) {
-        localStorage.setItem('yanga_last_opened_doc_id', nextActive.id);
+        setLastOpenedDocumentId(nextActive.id);
       } else {
-        localStorage.removeItem('yanga_last_opened_doc_id');
+        setLastOpenedDocumentId(null);
       }
     }
     showNotification('Document moved to trash', 'info');
   };
 
-  const handleImportDocument = (title: string, content: string, type: DocumentType, size: number) => {
+  const handleImportDocument = async (title: string, content: string, type: DocumentType, size: number) => {
     const newDocObj: Document = {
       id: `imported-${Date.now()}`,
       title,
@@ -191,12 +205,11 @@ export default function App() {
       }
     };
 
-    localStorage.setItem('yanga_last_opened_doc_id', newDocObj.id);
+    setLastOpenedDocumentId(newDocObj.id);
 
-    const updated = [newDocObj, ...documents];
-    const sorted = updated.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+    await saveSingleLocalDocument(newDocObj);
+    const sorted = await getRecentDocuments();
     setDocuments(sorted);
-    saveLocalDocuments(sorted);
     setActiveDoc(newDocObj);
     setActiveMode('view');
     showNotification(`Successfully imported "${title}"`, 'success');
@@ -210,6 +223,8 @@ export default function App() {
   const handleContentChange = (newContent: string) => {
     if (!activeDoc) return;
 
+    setAutosaveStatus('saving');
+
     const size = getByteSize(newContent);
     const updatedDoc: Document = {
       ...activeDoc,
@@ -219,48 +234,108 @@ export default function App() {
       syncStatus: 'pending', // Marks as pending sync immediately
     };
 
-    // Update state & databases
+    // Store in localStorage autosave data immediately (satisfies persistence requirement)
+    saveAutosaveBackup(activeDoc.id, newContent);
+
+    // Update state synchronously in React (to keep editing fluid)
     const list = documents.map((doc) => doc.id === activeDoc.id ? updatedDoc : doc);
     setDocuments(list);
-    saveLocalDocuments(list);
     setActiveDoc(updatedDoc);
-
-    // If online, auto sync draft to remote cloud
-    if (!isOffline) {
-      const res = syncDocumentToServer(updatedDoc);
-      if (res.success) {
-        const syncedDoc: Document = { ...updatedDoc, syncStatus: 'synced' };
-        const syncedList = list.map((doc) => doc.id === activeDoc.id ? syncedDoc : doc);
-        setDocuments(syncedList);
-        saveLocalDocuments(syncedList);
-        setActiveDoc(syncedDoc);
-      } else if (res.conflictWith) {
-        // Conflict detected!
-        const conflictedDoc: Document = { 
-          ...updatedDoc, 
-          syncStatus: 'conflict',
-          originalContent: res.conflictWith.content 
-        };
-        const conflictedList = list.map((doc) => doc.id === activeDoc.id ? conflictedDoc : doc);
-        setDocuments(conflictedList);
-        saveLocalDocuments(conflictedList);
-        setActiveDoc(conflictedDoc);
-        showNotification("Conflict detected! View Resolve settings", "error");
-      }
-    }
   };
 
-  const handleTitleChange = (newTitle: string) => {
+  // Debounced autosave to IndexedDB & Server Sync
+  useEffect(() => {
     if (!activeDoc) return;
-    const updatedDoc = {
+
+    // Check if the current state is already 'saved'. If so, skip.
+    if (autosaveStatus !== 'saving') return;
+
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        // Save to IndexedDB
+        await saveSingleLocalDocument(activeDoc);
+        
+        // Also update documents list in IndexedDB
+        const updatedList = documents.map((doc) => doc.id === activeDoc.id ? activeDoc : doc);
+        await saveLocalDocuments(updatedList);
+
+        // If online, perform sync to remote cloud
+        if (!isOffline) {
+          const res = syncDocumentToServer(activeDoc);
+          if (res.success) {
+            const syncedDoc: Document = { ...activeDoc, syncStatus: 'synced' };
+            await saveSingleLocalDocument(syncedDoc);
+            setActiveDoc(syncedDoc);
+            setDocuments(documents.map((doc) => doc.id === activeDoc.id ? syncedDoc : doc));
+          } else if (res.conflictWith) {
+            const conflictedDoc: Document = { 
+              ...activeDoc, 
+              syncStatus: 'conflict',
+              originalContent: res.conflictWith.content 
+            };
+            await saveSingleLocalDocument(conflictedDoc);
+            setActiveDoc(conflictedDoc);
+            setDocuments(documents.map((doc) => doc.id === activeDoc.id ? conflictedDoc : doc));
+            showNotification("Conflict detected! View Resolve settings", "error");
+          }
+        }
+        
+        setAutosaveStatus('saved');
+        // Clear autosave backup once safely flushed to primary IndexedDB
+        clearAutosaveBackup(activeDoc.id);
+      } catch (err) {
+        console.error("Autosave failed", err);
+        setAutosaveStatus('error');
+      }
+    }, 1000); // 1-second debounce for typing flow comfort
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [activeDoc?.content, isOffline]);
+
+  const handleSaveAs = async (doc: Document, newTitle: string) => {
+    const defaultEmail = currentUser?.email || 'guest@yanga.io';
+    const cleanTitle = newTitle.endsWith(`.${doc.type}`) ? newTitle : `${newTitle}.${doc.type}`;
+    const duplicateDoc: Document = {
+      ...doc,
+      id: `${doc.type}-${Date.now()}`,
+      title: cleanTitle,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      lastOpenedAt: Date.now(),
+      syncStatus: isOffline ? 'pending' : 'synced',
+      isOfflineDraft: isOffline,
+      permissions: {
+        owner: defaultEmail,
+        sharedWith: [],
+        linkSharing: 'private'
+      }
+    };
+    
+    await saveSingleLocalDocument(duplicateDoc);
+    const sorted = await getRecentDocuments();
+    setDocuments(sorted);
+    setActiveDoc(duplicateDoc);
+    setLastOpenedDocumentId(duplicateDoc.id);
+    showNotification(`Duplicated as "${cleanTitle}"`, 'success');
+  };
+
+  const handleSaveAndExit = () => {
+    setActiveDoc(null);
+    setLastOpenedDocumentId(null);
+    showNotification('Workspace closed cleanly', 'info');
+  };
+
+  const handleTitleChange = async (newTitle: string) => {
+    if (!activeDoc) return;
+    const updatedDoc: Document = {
       ...activeDoc,
       title: newTitle,
       updatedAt: Date.now(),
       syncStatus: 'pending' as const,
     };
-    const list = documents.map((doc) => doc.id === activeDoc.id ? updatedDoc : doc);
-    setDocuments(list);
-    saveLocalDocuments(list);
+    await saveSingleLocalDocument(updatedDoc);
+    const updatedDocs = await getRecentDocuments();
+    setDocuments(updatedDocs);
     setActiveDoc(updatedDoc);
     triggerAutoSyncAll();
   };
@@ -484,26 +559,37 @@ export default function App() {
   return (
     <div className="h-screen flex bg-[#0a0b0f] text-slate-100 overflow-hidden font-sans" id="applet-body-container">
       {/* Drawer Workspace Sidebar */}
-      <Sidebar
-        documents={documents}
-        activeDoc={activeDoc}
-        setActiveDoc={handleSelectDocument}
-        onCreateDoc={handleCreateDocument}
-        onDeleteDoc={handleDeleteDocument}
-        onImportDoc={handleImportDocument}
-        isOffline={isOffline}
-        setIsOffline={setIsOffline}
-        currentUser={currentUser}
-        onUserUpdate={handleUserUpdate}
-        isCollapsed={isSidebarCollapsed}
-        setIsCollapsed={setIsSidebarCollapsed}
-        onToggleSettings={() => setShowSettingsDrawer(!showSettingsDrawer)}
-      />
+      {!isFullscreen && (
+        <Sidebar
+          documents={documents}
+          activeDoc={activeDoc}
+          setActiveDoc={handleSelectDocument}
+          onCreateDoc={handleCreateDocument}
+          onDeleteDoc={handleDeleteDocument}
+          onImportDoc={handleImportDocument}
+          isOffline={isOffline}
+          setIsOffline={setIsOffline}
+          currentUser={currentUser}
+          onUserUpdate={handleUserUpdate}
+          isCollapsed={isSidebarCollapsed}
+          setIsCollapsed={setIsSidebarCollapsed}
+          onToggleSettings={() => setShowSettingsDrawer(!showSettingsDrawer)}
+        />
+      )}
 
       {/* Editor Main Canvas Wrapper */}
       <div className="flex-1 flex flex-col min-w-0 relative" id="main-canvas-wrapper">
+        {/* Blur overlay when Sidebar is expanded */}
+        {!isFullscreen && !isSidebarCollapsed && (
+          <div 
+            onClick={() => setIsSidebarCollapsed(true)}
+            className="absolute inset-0 z-40 bg-black/35 backdrop-blur-md transition-all duration-300 cursor-pointer animate-fadeIn"
+            id="sidebar-active-blur-overlay"
+            title="Click to collapse menu"
+          />
+        )}
         {/* Sync Status Banner */}
-        {isOffline && (
+        {!isFullscreen && isOffline && (
           <div className="bg-[#181510] border-b border-amber-950/40 px-6 py-2 flex items-center justify-between text-xs text-amber-500" id="offline-network-banner">
             <span className="flex items-center space-x-2">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
@@ -557,10 +643,13 @@ export default function App() {
           onToggleSettings={() => setShowSettingsDrawer(!showSettingsDrawer)}
           documentsList={documents}
           onSelectDoc={handleSelectDocument}
+          autosaveStatus={autosaveStatus}
+          onSaveAs={handleSaveAs}
+          onSaveAndExit={handleSaveAndExit}
         />
 
         {/* Minimal Sliding Settings Drawer */}
-        {showSettingsDrawer && (
+        {!isFullscreen && showSettingsDrawer && (
           <div 
             className="absolute top-0 right-0 h-full w-80 md:w-90 bg-[#12141a] border-l border-[#1d1f27] text-slate-300 shadow-2xl z-50 flex flex-col animate-slideLeft"
             id="workspace-settings-drawer"

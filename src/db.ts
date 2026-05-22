@@ -364,3 +364,107 @@ export function syncDocumentToServer(doc: Document): { success: boolean; conflic
 export function getByteSize(str: string): number {
   return new Blob([str]).size;
 }
+
+/**
+ * Deletes a single document from IndexedDB
+ */
+export async function deleteLocalDocument(id: string): Promise<void> {
+  try {
+    const db = await getDBConnection();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error('deleteLocalDocument from IndexedDB failed', err);
+  }
+}
+
+/**
+ * Saves or updates a single document inside IndexedDB
+ */
+export async function saveSingleLocalDocument(doc: Document): Promise<void> {
+  try {
+    const db = await getDBConnection();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.put(doc);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error('saveSingleLocalDocument to IndexedDB failed', err);
+  }
+}
+
+/**
+ * Gets the last opened document ID from local storage key
+ */
+export function getLastOpenedDocumentId(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_LAST_OPENED_DOC_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sets the last opened document ID in local storage key
+ */
+export function setLastOpenedDocumentId(id: string | null): void {
+  try {
+    if (id) {
+      localStorage.setItem(STORAGE_LAST_OPENED_DOC_KEY, id);
+    } else {
+      localStorage.removeItem(STORAGE_LAST_OPENED_DOC_KEY);
+    }
+  } catch (e) {
+    console.error('Failed to set last opened document ID', e);
+  }
+}
+
+/**
+ * Saves autosave backup data for a document
+ */
+export function saveAutosaveBackup(docId: string, content: string): void {
+  try {
+    localStorage.setItem(`yanga_autosave_${docId}`, content);
+  } catch (e) {
+    console.error('Failed to save autosave backup', e);
+  }
+}
+
+/**
+ * Loads autosave backup data for a document
+ */
+export function getAutosaveBackup(docId: string): string | null {
+  try {
+    return localStorage.getItem(`yanga_autosave_${docId}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clears autosave backup data for a document
+ */
+export function clearAutosaveBackup(docId: string): void {
+  try {
+    localStorage.removeItem(`yanga_autosave_${docId}`);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Loads and returns recent documents sorted by lastOpenedAt descending
+ */
+export async function getRecentDocuments(): Promise<Document[]> {
+  const docs = await loadLocalDocuments();
+  return docs.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+}
+

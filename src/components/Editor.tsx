@@ -7,7 +7,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Eye, Edit3, Share2, Info, Lock, AlertTriangle, FileText, 
   Heading1, Heading2, Bold, Italic, List, Shield, Download, Menu, ChevronRight, Users, Globe, Settings, CornerUpLeft, CornerUpRight,
-  Save, ChevronDown
+  Save, ChevronDown, Maximize, Minimize
 } from 'lucide-react';
 import { Document, WorkspaceMode, AppUser, SharingPermission } from '../types';
 import { getByteSize } from '../db';
@@ -31,6 +31,7 @@ interface EditorProps {
   onSelectDoc?: (doc: Document) => void;
   onSaveAs?: (doc: Document, newTitle: string) => void;
   onSaveAndExit?: () => void;
+  autosaveStatus?: 'saved' | 'saving' | 'error' | 'idle';
 }
 
 export default function Editor({
@@ -52,13 +53,129 @@ export default function Editor({
   onSelectDoc,
   onSaveAs,
   onSaveAndExit,
+  autosaveStatus = 'saved',
 }: EditorProps) {
   const [localTitle, setLocalTitle] = useState('');
   const [isRightDrawerOpen, setIsRightDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<'info' | 'share' | 'sync'>('info');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'view' | 'edit'>('view');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!window.document.fullscreenElement;
+      setIsFullscreen(isCurrentlyFullscreen);
+      if (!isCurrentlyFullscreen) {
+        // Unlock screen orientation when exiting fullscreen
+        try {
+          const anyScreen = screen as any;
+          if (anyScreen.orientation && typeof anyScreen.orientation.unlock === 'function') {
+            anyScreen.orientation.unlock();
+          }
+        } catch (err) {
+          console.warn("Screen orientation unlock failed:", err);
+        }
+      }
+    };
+    window.document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      window.document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    const anyScreen = screen as any;
+    if (!window.document.fullscreenElement) {
+      window.document.documentElement.requestFullscreen().then(() => {
+        setIsFullscreen(true);
+        // Lock screen orientation to match current display mode (portrait vs landscape)
+        try {
+          if (anyScreen.orientation && typeof anyScreen.orientation.lock === 'function') {
+            const currentOrientation = window.innerHeight > window.innerWidth ? 'portrait' : 'landscape';
+            anyScreen.orientation.lock(currentOrientation).catch((err: any) => {
+              console.warn("Screen orientation lock rejected:", err);
+            });
+          }
+        } catch (err) {
+          console.warn("Screen orientation lock API error:", err);
+        }
+      }).catch((err) => {
+        console.warn("Fullscreen request failed", err);
+        setIsFullscreen(true);
+      });
+      // Also trigger sidebar collapse for cleaner look
+      setIsSidebarCollapsed(true);
+    } else {
+      try {
+        if (anyScreen.orientation && typeof anyScreen.orientation.unlock === 'function') {
+          anyScreen.orientation.unlock();
+        }
+      } catch (err) {
+        console.warn("Screen orientation unlock failed:", err);
+      }
+      window.document.exitFullscreen().then(() => {
+        setIsFullscreen(false);
+      }).catch(() => {
+        setIsFullscreen(false);
+      });
+    }
+  };
   
+  // Scroll hide / show state (hide on scrolling up, show on scrolling down)
+  const [hideOnScroll, setHideOnScroll] = useState(false);
+
+  useEffect(() => {
+    let lastScrollTop = 0;
+    
+    const handleScrollEvent = (e: Event) => {
+      const target = e.target as HTMLElement;
+      if (!target) return;
+      
+      const currentScrollTop = target.scrollTop;
+      
+      // If we are close or at the very top, make sure everything is visible
+      if (currentScrollTop <= 10) {
+        setHideOnScroll(false);
+        lastScrollTop = currentScrollTop;
+        return;
+      }
+      
+      const diff = currentScrollTop - lastScrollTop;
+      
+      // Filter out small scrolling jitters
+      if (Math.abs(diff) > 2) {
+        if (diff < 0) {
+          // Scrolling UP -> immediately disappear!
+          setHideOnScroll(true);
+        } else {
+          // Scrolling DOWN -> immediately reappear!
+          setHideOnScroll(false);
+        }
+        lastScrollTop = currentScrollTop;
+      }
+    };
+
+    const scrollContainer = window.document.getElementById('workspace-scroll-wrap');
+    const textareaContainer = window.document.getElementById('document-editor-textarea');
+    
+    if (scrollContainer) {
+      scrollContainer.addEventListener('scroll', handleScrollEvent, { passive: true });
+    }
+    if (textareaContainer) {
+      textareaContainer.addEventListener('scroll', handleScrollEvent, { passive: true });
+    }
+
+    return () => {
+      if (scrollContainer) {
+        scrollContainer.removeEventListener('scroll', handleScrollEvent);
+      }
+      if (textareaContainer) {
+        textareaContainer.removeEventListener('scroll', handleScrollEvent);
+      }
+    };
+  }, [activeMode]);
+
   // Save options dropdown states
   const [showSaveDropdown, setShowSaveDropdown] = useState(false);
   const [isPromptingSaveAs, setIsPromptingSaveAs] = useState(false);
@@ -293,265 +410,99 @@ export default function Editor({
 
   return (
     <div className="flex-1 flex bg-[#0c0d12] text-slate-100 overflow-hidden relative" id="editor-active-container">
+      {isFullscreen && (
+        <button
+          type="button"
+          onClick={toggleFullscreen}
+          className="absolute top-4 right-4 z-50 p-2.5 rounded-full bg-[#181a23]/90 hover:bg-[#202330]/90 text-slate-450 hover:text-slate-100 border border-[#2d313f] hover:border-slate-500/30 transition-all duration-300 shadow-2xl cursor-pointer"
+          title="Exit Full Screen"
+        >
+          <Minimize className="h-5 w-5" />
+        </button>
+      )}
       
       {/* 2-Column inner layout: Center Workspace + Right details Panel */}
-      <div className="flex-1 flex flex-col overflow-hidden border-r border-[#151720]">
+      <div className="flex-1 flex flex-col overflow-hidden border-r border-[#151720] relative">
         
         {/* Tiny clean top toolbar bar */}
-        <div className="px-6 py-3.5 border-b border-[#14161f] bg-[#0c0d12] flex items-center justify-between gap-4" id="editor-top-bar">
-          <div className="flex items-center space-x-3.5 min-w-0 flex-1">
-            {isSidebarCollapsed && (
-              <button
-                type="button"
-                onClick={() => setIsSidebarCollapsed(false)}
-                className="p-1.5 rounded-md hover:bg-[#181a23] border border-[#1b1d26] text-slate-400 hover:text-slate-100 transition-colors cursor-pointer shrink-0"
-                title="Expand Sidebar"
-              >
-                <Menu className="h-4 w-4" />
-              </button>
-            )}
+        {!isFullscreen && (
+          <div 
+            className={`px-6 bg-[#0c0d12] flex items-center justify-between gap-4 transition-all duration-200 overflow-hidden ${
+              hideOnScroll ? 'h-0 py-0 border-b-0 opacity-0 pointer-events-none' : 'h-[53px] py-3.5 border-b border-[#14161f] opacity-100'
+            }`} 
+            id="editor-top-bar"
+          >
+            <div className="flex items-center space-x-3.5 min-w-0 flex-1">
+              {isSidebarCollapsed && (
+                <button
+                  type="button"
+                  onClick={() => setIsSidebarCollapsed(false)}
+                  className="p-1.5 rounded-md hover:bg-[#181a23] border border-[#1b1d26] text-slate-400 hover:text-slate-100 transition-colors cursor-pointer shrink-0"
+                  title="Expand Sidebar"
+                >
+                  <Menu className="h-4 w-4" />
+                </button>
+              )}
 
-            <form onSubmit={handleTitleSubmit} className="flex-1 flex items-center space-x-2.5">
-              <input
-                type="text"
-                value={localTitle}
-                onChange={(e) => setLocalTitle(e.target.value)}
-                onBlur={() => localTitle.trim() && onTitleChange(localTitle.trim())}
-                disabled={!canEdit}
-                className="font-sans font-medium text-sm bg-transparent border-b border-transparent hover:border-slate-800 focus:border-slate-700 px-1 py-0.5 text-slate-150 focus:outline-none max-w-xs truncate"
-                title="Edit document title"
-                id="editor-title-field"
-              />
-              {!canEdit && (
-                <span className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[9px] uppercase font-mono bg-slate-900 border border-slate-800 text-slate-500">
-                  <Lock className="h-2.5 w-2.5" />
-                  <span>Read Only</span>
+              <form onSubmit={handleTitleSubmit} className="flex-1 flex items-center space-x-2.5">
+                <input
+                  type="text"
+                  value={localTitle}
+                  onChange={(e) => setLocalTitle(e.target.value)}
+                  onBlur={() => localTitle.trim() && onTitleChange(localTitle.trim())}
+                  disabled={!canEdit}
+                  className="font-sans font-medium text-sm bg-transparent border-b border-transparent hover:border-slate-800 focus:border-slate-700 px-1 py-0.5 text-slate-150 focus:outline-none max-w-xs truncate"
+                  title="Edit document title"
+                  id="editor-title-field"
+                />
+                {!canEdit && (
+                  <span className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[9px] uppercase font-mono bg-slate-900 border border-slate-800 text-slate-500">
+                    <Lock className="h-2.5 w-2.5" />
+                    <span>Read Only</span>
+                  </span>
+                )}
+              </form>
+            </div>            {/* Top diagnostic indicators / Trigger buttons to slide-in Right drawer detail column */}
+            <div className="flex items-center space-x-1.5" id="top-bar-tabs">
+              {saveBannerMessage && (
+                <span className="text-[10px] text-emerald-400 animate-fadeIn font-mono bg-[#111915] border border-emerald-950/35 px-2 py-1 rounded mr-2 shrink-0">
+                  ✓ {saveBannerMessage}
                 </span>
               )}
-            </form>
-          </div>
 
-          {/* Top diagnostic indicators / Trigger buttons to slide-in Right drawer detail column */}
-          <div className="flex items-center space-x-1.5" id="top-bar-tabs">
-            <button
-              type="button"
-              onClick={() => {
-                setDrawerTab('share');
-                setIsRightDrawerOpen(!isRightDrawerOpen);
-              }}
-              className={`p-1 px-2 text-xs font-semibold rounded-md border transition-all flex items-center gap-1 cursor-pointer ${
-                isRightDrawerOpen && drawerTab === 'share'
-                  ? 'bg-[#1c1e26] border-slate-700 text-slate-200'
-                  : 'bg-transparent border-transparent text-slate-450 hover:text-slate-200'
-              }`}
-              title="Share & permissions settings"
-            >
-              <Share2 className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">Share</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setDrawerTab('info');
-                setIsRightDrawerOpen(!isRightDrawerOpen);
-              }}
-              className={`p-1 px-2 text-xs font-semibold rounded-md border transition-all flex items-center gap-1 cursor-pointer ${
-                isRightDrawerOpen && drawerTab === 'info'
-                  ? 'bg-[#1c1e26] border-slate-700 text-slate-200'
-                  : 'bg-transparent border-transparent text-slate-450 hover:text-slate-200'
-              }`}
-              title="Document settings & metadata"
-            >
-              <Settings className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">Settings</span>
-            </button>
-          </div>
-        </div>        {/* New Dedicated Sub-Header: View, Edit, and Save dropdown menu below main header */}
-        <div className="px-6 py-1.5 border-b border-[#14161f] bg-[#090a0e] flex items-center justify-between gap-4 animate-fadeIn" id="editor-sub-bar">
-          <div className="flex items-center space-x-2">
-            
-            {/* Unified aesthetic icons group: Eye, Edit, Save */}
-            <div className="flex items-center space-x-1 bg-[#12141a] p-0.5 rounded-md border border-[#1d1f27]">
+              {/* View Full Screen Icon Button */}
               <button
-                onClick={() => {
-                  setActiveMode('view');
-                  setShowSaveDropdown(false);
-                }}
                 type="button"
-                className={`p-1.5 rounded transition-all cursor-pointer ${
-                  activeMode === 'view'
-                    ? 'bg-[#1e2029] text-white border border-slate-700 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-[#161821]'
-                }`}
-                title="View Mode"
+                onClick={toggleFullscreen}
+                className="p-1.5 rounded-md hover:bg-[#181a23] border border-transparent hover:border-[#21232e] text-slate-400 hover:text-slate-100 transition-colors cursor-pointer flex items-center"
+                title={isFullscreen ? "Exit Full Screen" : "View Full Screen"}
               >
-                <Eye className="h-4 w-4" />
-              </button>
-
-              <button
-                onClick={() => {
-                  setActiveMode('edit');
-                  setShowSaveDropdown(false);
-                }}
-                type="button"
-                className={`p-1.5 rounded transition-all cursor-pointer ${
-                  activeMode === 'edit'
-                    ? 'bg-[#1e2029] text-white border border-slate-700 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-[#161821]'
-                }`}
-                title="Edit Mode"
-              >
-                <Edit3 className="h-4 w-4" />
-              </button>
-
-              {/* Save Options trigger with dropdown */}
-              <div className="relative inline-block" ref={saveDropdownRef} id="save-options-dropdown-container">
-                <button
-                  onClick={() => setShowSaveDropdown(!showSaveDropdown)}
-                  type="button"
-                  className={`p-1.5 rounded transition-all cursor-pointer flex items-center space-x-0.5 ${
-                    showSaveDropdown
-                      ? 'bg-[#1e2029] text-white border border-slate-700'
-                      : 'text-slate-450 hover:text-slate-200 hover:bg-[#161821]'
-                  }`}
-                  title="Save & Export Options"
-                >
-                  <Save className="h-4 w-4" />
-                  <ChevronDown className="h-3 w-3 text-slate-500" />
-                </button>
-
-                {showSaveDropdown && (
-                  <div className="absolute left-0 mt-2 w-52 bg-[#12141a] border border-[#232631] rounded-lg shadow-2xl z-50 py-1 animate-fadeIn font-sans">
-                    {!isPromptingSaveAs ? (
-                      <>
-                        <button
-                          onClick={() => {
-                            setShowSaveDropdown(false);
-                            setSaveBannerMessage('Autosaved Clean Draft');
-                            setTimeout(() => setSaveBannerMessage(null), 3500);
-                          }}
-                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2"
-                        >
-                          <Save className="h-3 w-3 text-slate-500" />
-                          <span>Save Draft</span>
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            setSaveAsTitle(document.title.replace(/\.[^/.]+$/, "") + " - Copy");
-                            setIsPromptingSaveAs(true);
-                          }}
-                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2"
-                        >
-                          <Share2 className="h-3 w-3 text-slate-500" />
-                          <span>Save As (Duplicate)</span>
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            setShowSaveDropdown(false);
-                            if (onSaveAndExit) onSaveAndExit();
-                          }}
-                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2 border-t border-[#1d1f27]"
-                        >
-                          <FileText className="h-3 w-3 text-slate-500" />
-                          <span>Save and Exit</span>
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            setShowSaveDropdown(false);
-                            onExportPDF(document);
-                          }}
-                          className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2 border-t border-[#1d1f27]"
-                        >
-                          <Download className="h-3 w-3 text-slate-500" />
-                          <span>Convert to PDF</span>
-                        </button>
-                      </>
-                    ) : (
-                      <form 
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          if (saveAsTitle.trim() && onSaveAs) {
-                            onSaveAs(document, saveAsTitle.trim());
-                            setIsPromptingSaveAs(false);
-                            setShowSaveDropdown(false);
-                            setSaveAsTitle('');
-                          }
-                        }}
-                        className="p-3 space-y-2"
-                      >
-                        <p className="text-[10px] text-slate-500 font-mono">NEW COPY FILE NAME:</p>
-                        <input
-                          type="text"
-                          value={saveAsTitle}
-                          onChange={(e) => setSaveAsTitle(e.target.value)}
-                          placeholder="Name..."
-                          className="w-full bg-[#181a22] text-slate-100 placeholder-slate-600 border border-[#232631] rounded p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-700 font-sans"
-                          autoFocus
-                          required
-                        />
-                        <div className="flex gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setIsPromptingSaveAs(false)}
-                            className="flex-1 py-1 text-[10px] bg-transparent text-slate-400 hover:text-white rounded"
-                          >
-                            Back
-                          </button>
-                          <button
-                            type="submit"
-                            className="flex-1 py-1 text-[10px] bg-slate-200 text-slate-950 font-bold rounded hover:bg-white transition-colors"
-                          >
-                            Duplicate
-                          </button>
-                        </div>
-                      </form>
-                    )}
-                  </div>
+                {isFullscreen ? (
+                  <Minimize className="h-4 w-4" />
+                ) : (
+                  <Maximize className="h-4 w-4" />
                 )}
-              </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDrawerTab('info');
+                  setIsRightDrawerOpen(!isRightDrawerOpen);
+                }}
+                className={`p-1 px-2 text-xs font-semibold rounded-md border transition-all flex items-center gap-1 cursor-pointer ${
+                  isRightDrawerOpen
+                    ? 'bg-[#1c1e26] border-slate-700 text-slate-200'
+                    : 'bg-transparent border-transparent text-slate-450 hover:text-slate-200'
+                }`}
+                title="Document settings & metadata"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                <span className="hidden md:inline">Settings</span>
+              </button>
             </div>
-
-            {/* Undo/Redo quick operations */}
-            {activeMode === 'edit' && canEdit && (
-              <div className="hidden sm:flex items-center space-x-0.5 border-l border-[#1a1c25] pl-2.5" id="subbar-undo-redo-ctrl">
-                <button
-                  type="button"
-                  onClick={handleUndo}
-                  disabled={historyIndex <= 0}
-                  className={`p-1 rounded transition-colors ${
-                    historyIndex > 0 ? 'text-slate-300 hover:bg-[#151720]' : 'text-slate-650 cursor-not-allowed'
-                  }`}
-                  title="Undo last modification"
-                >
-                  <CornerUpLeft className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRedo}
-                  disabled={historyIndex >= history.length - 1}
-                  className={`p-1 rounded transition-colors ${
-                    historyIndex < history.length - 1 ? 'text-slate-300 hover:bg-[#151720]' : 'text-slate-650 cursor-not-allowed'
-                  }`}
-                  title="Redo modification"
-                >
-                  <CornerUpRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
           </div>
-
-          <div className="flex items-center space-x-3">
-            {saveBannerMessage && (
-              <span className="text-[10px] text-emerald-400 animate-fadeIn font-mono bg-[#111915] border border-emerald-900/30 px-1.5 py-0.5 rounded">
-                ✓ {saveBannerMessage}
-              </span>
-            )}
-          </div>
-        </div>
+        )}
 
         {/* Dynamic Canvas Area */}
         <div className={`flex-1 overflow-y-auto w-full ${activeMode === 'edit' ? 'bg-[#fcfcf9] p-0' : 'bg-[#0a0b0f] p-6 lg:p-12'}`} id="workspace-scroll-wrap">
@@ -666,8 +617,22 @@ export default function Editor({
                             </button>
                           </div>
 
-                          <div className="text-[10px] uppercase font-mono tracking-wider font-bold text-slate-400">
-                            Autosaved Locally
+                          <div className="text-[10px] uppercase font-mono tracking-wider font-bold">
+                            {autosaveStatus === 'saving' && (
+                              <span className="text-amber-600 flex items-center gap-1.5">
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                <span>Saving draft...</span>
+                              </span>
+                            )}
+                            {autosaveStatus === 'saved' && (
+                              <span className="text-emerald-600">✓ Autosaved Locally</span>
+                            )}
+                            {autosaveStatus === 'error' && (
+                              <span className="text-rose-600">⚠️ Save failed</span>
+                            )}
+                            {autosaveStatus === 'idle' && (
+                              <span className="text-slate-400">Idle</span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -691,10 +656,145 @@ export default function Editor({
             </>
           )}
         </div>
+
+        {/* Floating Stacked Edit & Save buttons */}
+        {!isFullscreen && (
+          <div 
+            className={`absolute bottom-6 right-6 z-30 flex flex-col gap-3 transition-all duration-200 ${
+              hideOnScroll ? 'opacity-0 translate-y-12 pointer-events-none' : 'opacity-100 translate-y-0'
+            }`} 
+            id="floating-actions-container"
+          >
+            {/* Edit Mode Toggle Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setActiveMode(activeMode === 'edit' ? 'view' : 'edit');
+                setShowSaveDropdown(false);
+              }}
+              className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl cursor-pointer border ${
+                activeMode === 'edit'
+                  ? 'bg-[#181a23]/90 hover:bg-[#202330]/90 text-amber-400 border-amber-500/30'
+                  : 'bg-[#181a23]/90 hover:bg-[#202330]/90 text-slate-350 border-[#2d313f] hover:text-white'
+              }`}
+              title={activeMode === 'edit' ? "Switch to View Mode" : "Switch to Edit Mode"}
+            >
+              <Edit3 className="h-5 w-5" />
+            </button>
+
+            {/* Save Options trigger with vertical pop-up folder list */}
+            <div className="relative" ref={saveDropdownRef} id="floating-save-options-container">
+              <button
+                onClick={() => setShowSaveDropdown(!showSaveDropdown)}
+                type="button"
+                className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl cursor-pointer border ${
+                  showSaveDropdown
+                    ? 'bg-slate-100/95 text-slate-955 border-white'
+                    : 'bg-[#181a23]/90 hover:bg-[#202330]/90 text-slate-350 border-[#2d313f] hover:text-white'
+                }`}
+                title="Save & Export Options"
+              >
+                <Save className="h-5 w-5" />
+              </button>
+
+              {showSaveDropdown && (
+                <div className="absolute right-0 bottom-full mb-3 w-52 bg-[#12141a] border border-[#232631] rounded-lg shadow-2xl z-50 py-1 animate-fadeIn font-sans text-left">
+                  {!isPromptingSaveAs ? (
+                    <>
+                      <button
+                        onClick={() => {
+                          setShowSaveDropdown(false);
+                          setSaveBannerMessage('Autosaved Clean Draft');
+                          setTimeout(() => setSaveBannerMessage(null), 3500);
+                        }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2"
+                      >
+                        <Save className="h-3.5 w-3.5 text-slate-500" />
+                        <span>Save Draft</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setSaveAsTitle(document.title.replace(/\.[^/.]+$/, "") + " - Copy");
+                          setIsPromptingSaveAs(true);
+                        }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2"
+                      >
+                        <Share2 className="h-3.5 w-3.5 text-slate-500" />
+                        <span>Save As (Duplicate)</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setShowSaveDropdown(false);
+                          if (onSaveAndExit) onSaveAndExit();
+                        }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2 border-t border-[#1d1f27]"
+                      >
+                        <FileText className="h-3.5 w-3.5 text-slate-500" />
+                        <span>Save and Exit</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setShowSaveDropdown(false);
+                          onExportPDF(document);
+                        }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-300 hover:bg-[#181a22] hover:text-white flex items-center space-x-2 border-t border-[#1d1f27]"
+                      >
+                        <Download className="h-3.5 w-3.5 text-slate-500" />
+                        <span>Convert to PDF</span>
+                      </button>
+                    </>
+                  ) : (
+                    <form 
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (saveAsTitle.trim() && onSaveAs) {
+                          onSaveAs(document, saveAsTitle.trim());
+                          setIsPromptingSaveAs(false);
+                          setShowSaveDropdown(false);
+                          setSaveAsTitle('');
+                        }
+                      }}
+                      className="p-3 space-y-2"
+                    >
+                      <p className="text-[10px] text-slate-500 font-mono">NEW COPY FILE NAME:</p>
+                      <input
+                        type="text"
+                        value={saveAsTitle}
+                        onChange={(e) => setSaveAsTitle(e.target.value)}
+                        placeholder="Name..."
+                        className="w-full bg-[#181a22] text-slate-100 placeholder-slate-600 border border-[#232631] rounded p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-700 font-sans"
+                        autoFocus
+                        required
+                      />
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setIsPromptingSaveAs(false)}
+                          className="flex-1 py-1 text-[10px] bg-transparent text-slate-400 hover:text-white rounded"
+                        >
+                          Back
+                        </button>
+                        <button
+                          type="submit"
+                          className="flex-1 py-1 text-[10px] bg-slate-200 text-slate-950 font-bold rounded hover:bg-white transition-colors"
+                        >
+                          Duplicate
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* RIGHT DRAWER: slides in cleanly, holds access level, details, conversion action configs */}
-      {isRightDrawerOpen && (
+      {!isFullscreen && isRightDrawerOpen && (
         <div 
           className="w-72 md:w-80 border-l border-[#1d1f27] bg-[#12141a] h-full flex flex-col shrink-0 animate-slideLeft z-30 font-sans"
           id="right-drawer-container"
