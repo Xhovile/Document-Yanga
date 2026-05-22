@@ -1,0 +1,6 @@
+{
+  "name": "Document Yanga",
+  "description": "A lightweight offline-first document workspace to open, edit, sync, and share documents safely and convert them on-the-fly.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
