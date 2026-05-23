@@ -5,10 +5,33 @@
 
 import React, { useState, useRef } from 'react';
 import { 
-  FileText, Plus, Search, Trash2, Wifi, WifiOff, FileCode, ChevronLeft, Upload, User, Settings, Database
+  FileText, Plus, Search, Trash2, Wifi, WifiOff, FileCode, ChevronLeft, Upload, User, Settings, Database, HardDrive,
+  Folder, FolderOpen, ChevronDown, ChevronRight, Link
 } from 'lucide-react';
 import { Document, DocumentType, AppUser } from '../types';
 import * as mammoth from 'mammoth';
+
+export interface FolderFile {
+  name: string;
+  type: DocumentType;
+  size: number;
+  content: string;
+}
+
+export interface FolderNode {
+  name: string;
+  files: FolderFile[];
+  subfolders: FolderNode[];
+}
+
+export interface DefaultFolder {
+  id: string;
+  name: string;
+  isExpanded: boolean;
+  subfolders: FolderNode[];
+  files: FolderFile[];
+  devicePath?: string;
+}
 
 interface SidebarProps {
   documents: Document[];
@@ -53,9 +76,188 @@ export default function Sidebar({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const filteredDocs = documents.filter((doc) =>
-    doc.title.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Restore foldered trees from localStorage or fall back to empty array on startup
+  const [folders, setFolders] = useState<DefaultFolder[]>(() => {
+    try {
+      const stored = localStorage.getItem('yanga_custom_folders_v1');
+      if (stored) {
+        const parsed: DefaultFolder[] = JSON.parse(stored);
+        return parsed.map(f => ({ ...f, isExpanded: false }));
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [expandedSubfolders, setExpandedSubfolders] = useState<Record<string, boolean>>({});
+  const [activeFolderChoiceId, setActiveFolderChoiceId] = useState<string | null>(null);
+  
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  // Persist customized folders structure
+  const saveFoldersToStorage = (updated: DefaultFolder[]) => {
+    try {
+      localStorage.setItem('yanga_custom_folders_v1', JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const deleteFolder = (folderId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = folders.filter(f => f.id !== folderId);
+    setFolders(updated);
+    saveFoldersToStorage(updated);
+  };
+
+  const toggleFolder = (folderId: string) => {
+    const updated = folders.map(f => f.id === folderId ? { ...f, isExpanded: !f.isExpanded } : f);
+    setFolders(updated);
+    saveFoldersToStorage(updated);
+  };
+
+  const toggleSubfolder = (pathKey: string) => {
+    setExpandedSubfolders(prev => ({
+      ...prev,
+      [pathKey]: !prev[pathKey]
+    }));
+  };
+
+  const isSubfolderExpanded = (pathKey: string) => !!expandedSubfolders[pathKey];
+
+  const triggerFolderSelect = (folderId: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Avoid triggering parent accordion toggling
+    setActiveFolderChoiceId(folderId);
+    setTimeout(() => {
+      folderInputRef.current?.click();
+    }, 50);
+  };
+
+  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesList = e.target.files;
+      const tree: any = { name: 'root', files: [], subfolders: {} };
+
+      for (let i = 0; i < filesList.length; i++) {
+        const file = filesList[i];
+        
+        // parse webkitRelativePath
+        const pathParts = file.webkitRelativePath.split('/').slice(1);
+        if (pathParts.length === 0) continue;
+
+        const fileName = pathParts[pathParts.length - 1];
+        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+        const isSupported = ['txt', 'md', 'docx', 'pdf'].includes(ext);
+        if (!isSupported) continue;
+
+        let currentNode = tree;
+        for (let p = 0; p < pathParts.length - 1; p++) {
+          const part = pathParts[p];
+          if (!currentNode.subfolders[part]) {
+            currentNode.subfolders[part] = { name: part, files: [], subfolders: {} };
+          }
+          currentNode = currentNode.subfolders[part];
+        }
+
+        const type = ext as DocumentType;
+
+        let content = `[Local File: ${fileName}]`;
+        if (file.size < 500000 && (ext === 'txt' || ext === 'md')) {
+          try {
+            content = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (ev) => resolve(ev.target?.result as string || '');
+              reader.onerror = () => resolve(`[Failed to read ${fileName}]`);
+              reader.readAsText(file);
+            });
+          } catch {
+            // fallback
+          }
+        }
+
+        currentNode.files.push({
+          name: fileName,
+          type,
+          size: file.size,
+          content
+        });
+      }
+
+      const convertNode = (node: any): FolderNode | null => {
+        const subfoldersFiltered = Object.keys(node.subfolders)
+          .map(k => convertNode(node.subfolders[k]))
+          .filter((sub): sub is FolderNode => sub !== null);
+
+        if (node.files.length === 0 && subfoldersFiltered.length === 0) {
+          return null;
+        }
+
+        return {
+          name: node.name,
+          files: node.files,
+          subfolders: subfoldersFiltered
+        };
+      };
+
+      const parsedSubfolders = Object.keys(tree.subfolders)
+        .map(k => convertNode(tree.subfolders[k]))
+        .filter((sub): sub is FolderNode => sub !== null);
+      const parsedFiles = tree.files;
+      const rootName = filesList[0].webkitRelativePath.split('/')[0] || "Custom Folder";
+
+      let updated: DefaultFolder[];
+      if (activeFolderChoiceId && activeFolderChoiceId !== 'new') {
+        updated = folders.map(f => {
+          if (f.id === activeFolderChoiceId) {
+            return {
+              ...f,
+              isExpanded: true,
+              devicePath: rootName,
+              subfolders: parsedSubfolders,
+              files: parsedFiles
+            };
+          }
+          return f;
+        });
+      } else {
+        const newFolder: DefaultFolder = {
+          id: 'f_' + Date.now().toString(),
+          name: rootName,
+          isExpanded: true,
+          subfolders: parsedSubfolders,
+          files: parsedFiles,
+          devicePath: rootName
+        };
+        updated = [...folders, newFolder];
+      }
+
+      setFolders(updated);
+      saveFoldersToStorage(updated);
+      setActiveFolderChoiceId(null);
+      e.target.value = '';
+    }
+  };
+
+  const handleFolderFileClick = (file: FolderFile) => {
+    const existing = documents.find(d => d.title === file.name);
+    if (existing) {
+      setActiveDoc(existing);
+    } else {
+      onImportDoc(file.name, file.content, file.type, file.size);
+    }
+  };
+
+  const lastOpenedTime = (doc: Document) => {
+    return Math.max(doc.lastOpenedAt || 0, doc.updatedAt || 0, doc.createdAt || 0);
+  };
+
+  const filteredDocs = [...documents]
+    .sort((a, b) => lastOpenedTime(b) - lastOpenedTime(a))
+    .filter((doc) =>
+      doc.title.toLowerCase().includes(searchTerm.toLowerCase())
+    )
+    .slice(0, 20);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -124,6 +326,55 @@ export default function Sidebar({
       isLoggedIn: true,
     });
     setShowProfileSwitcher(false);
+  };
+
+  // Recursive renderer for subfolder nodes
+  const renderFolderNode = (node: FolderNode, depth: number = 1, parentKey: string = ''): React.ReactNode => {
+    const currentKey = parentKey ? `${parentKey}/${node.name}` : node.name;
+    const key = `${currentKey}-${depth}`;
+    const expanded = isSubfolderExpanded(key);
+    
+    return (
+      <div key={key} className="mt-1 select-none">
+        {/* Subfolder title */}
+        <div 
+          onClick={() => toggleSubfolder(key)}
+          className="flex items-center space-x-1.5 py-1 px-1.5 rounded hover:bg-[#1a1c24] text-slate-400 hover:text-slate-200 cursor-pointer text-xs"
+          style={{ paddingLeft: `${depth * 12 + 6}px` }}
+        >
+          {expanded ? (
+            <ChevronDown className="h-3 w-3 shrink-0 text-slate-500" />
+          ) : (
+            <ChevronRight className="h-3 w-3 shrink-0 text-slate-500" />
+          )}
+          {expanded ? (
+            <FolderOpen className="h-3.5 w-3.5 text-cyan-500/80 shrink-0" />
+          ) : (
+            <Folder className="h-3.5 w-3.5 text-cyan-600/80 shrink-0" />
+          )}
+          <span className="truncate flex-1">{node.name}</span>
+        </div>
+
+        {/* Subfolder contents */}
+        {expanded && (
+          <div className="space-y-0.5">
+            {node.subfolders?.map(sub => renderFolderNode(sub, depth + 1, currentKey))}
+            {node.files?.map((file, idx) => (
+              <div
+                key={`${currentKey}/${file.name}-${idx}`}
+                onClick={() => handleFolderFileClick(file)}
+                className="flex items-center space-x-2 py-1 px-1.5 rounded hover:bg-[#1c1e26] text-slate-450 hover:text-slate-200 cursor-pointer text-xs"
+                style={{ paddingLeft: `${(depth + 1) * 12 + 10}px` }}
+              >
+                <FileText className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+                <span className="truncate flex-1">{file.name}</span>
+                <span className="text-[9px] font-mono text-slate-600">{(file.size / 1024).toFixed(1)}K</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   };
 
   // Human bytes size conversion helper
@@ -207,10 +458,12 @@ export default function Sidebar({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center justify-center bg-[#1c1e26] hover:bg-[#222530] text-slate-300 border border-[#2b2e3a] font-medium text-xs rounded-md p-1.5 transition-colors cursor-pointer"
-            title="Import text, MD, DOCX, or PDF"
+            className="flex-1 flex items-center justify-center space-x-1.5 bg-[#1c1e26] hover:bg-[#222530] text-slate-300 border border-[#2b2e3a] font-medium text-xs rounded-md py-1.5 px-3 transition-colors cursor-pointer group"
+            id="internal-storage-btn"
+            title="Browse & find documents on this device"
           >
-            <Upload className="h-3.5 w-3.5" />
+            <HardDrive className="h-3.5 w-3.5 text-slate-400 group-hover:text-slate-200" />
+            <span>Internal Storage</span>
           </button>
           <input
             type="file"
@@ -262,6 +515,131 @@ export default function Sidebar({
 
       {/* Middle area: Recent files list */}
       <div className="flex-1 overflow-y-auto px-3.5 py-4 space-y-1" id="recent-files-scroller">
+        
+        {/* Hidden directory picker input */}
+        <input
+          type="file"
+          ref={folderInputRef}
+          onChange={handleFolderSelect}
+          className="hidden"
+          {...{
+            webkitdirectory: "true",
+            directory: "true",
+            multiple: true
+          } as any}
+        />
+
+        {/* Local Directories / Folders Accordion Area */}
+        {folders.length === 0 ? (
+          <button
+            type="button"
+            onClick={(e) => triggerFolderSelect('new', e)}
+            className="w-full flex items-center justify-center space-x-2 py-3 px-4 mb-5 bg-[#171a24] hover:bg-[#1d212d] text-cyan-400 hover:text-cyan-300 border border-cyan-500/10 hover:border-cyan-400/30 font-mono text-xs rounded-lg transition-all shadow-md group cursor-pointer text-center"
+            id="choose-default-folders-btn"
+          >
+            <Folder className="h-4 w-4 shrink-0 transition-transform group-hover:scale-105" />
+            <span>Choose default folders</span>
+          </button>
+        ) : (
+          <div className="mb-6 space-y-1">
+            <div className="flex items-center justify-between px-1.5 mb-2">
+              <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">
+                Local Directories
+              </h3>
+              <button
+                type="button"
+                onClick={(e) => triggerFolderSelect('new', e)}
+                className="text-[10px] text-cyan-500 hover:text-cyan-400 font-mono flex items-center space-x-1 cursor-pointer"
+                title="Link another local folder"
+              >
+                <span>+ Add</span>
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              {folders.map((f) => {
+                return (
+                  <div key={f.id} className="rounded-lg overflow-hidden bg-[#151720]/40 border border-[#1d1f27]/40">
+                    <div 
+                      onClick={() => toggleFolder(f.id)}
+                      className={`flex items-center justify-between p-2 px-2.5 cursor-pointer hover:bg-[#1a1c24] transition-all select-none ${
+                        f.isExpanded ? 'bg-[#181a22]' : ''
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2 min-w-0">
+                        {f.isExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                        )}
+                        {f.isExpanded ? (
+                          <FolderOpen className="h-4 w-4 text-cyan-500/90 shrink-0" />
+                        ) : (
+                          <Folder className="h-4 w-4 text-cyan-600/90 shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <span className="text-xs font-medium text-slate-200 block truncate text-left">{f.name}</span>
+                          {f.devicePath && (
+                            <span className="text-[8.5px] font-mono text-cyan-500 block truncate leading-none text-left">
+                              Linked: {f.devicePath}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => triggerFolderSelect(f.id, e)}
+                          className="p-1 rounded text-slate-500 hover:text-cyan-400 hover:bg-[#20222d] transition-all cursor-pointer flex items-center gap-1 group"
+                          title="Link / choose physical device folder"
+                        >
+                          <Link className="h-3 w-3 group-hover:scale-105" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => deleteFolder(f.id, e)}
+                          className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-[#20222d] transition-all cursor-pointer flex items-center gap-1 group animate-fadeIn"
+                          title="Unlink/delete folder"
+                        >
+                          <Trash2 className="h-3 w-3 group-hover:scale-105" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Expanded level items */}
+                    {f.isExpanded && (
+                      <div className="px-2 pb-2 bg-[#13151c]/40 space-y-1 pt-1 border-t border-[#1d1f27]/30 max-h-60 overflow-y-auto custom-scrollbar">
+                        {f.subfolders.length === 0 && f.files.length === 0 && (
+                          <div className="text-[10px] font-mono text-slate-600 py-2 text-center">
+                            Empty device folder
+                          </div>
+                        )}
+                        
+                        {/* Nested levels of nodes recursively */}
+                        {f.subfolders.map(sub => renderFolderNode(sub, 1, f.id))}
+                        
+                        {/* Nested files */}
+                        {f.files.map((file, idx) => (
+                          <div
+                            key={`${f.id}/${file.name}-${idx}`}
+                            onClick={() => handleFolderFileClick(file)}
+                            className="flex items-center space-x-2 py-1 px-1.5 rounded hover:bg-[#1c1e26] text-slate-400 hover:text-slate-200 cursor-pointer text-xs ml-1.5"
+                          >
+                            <FileText className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+                            <span className="truncate flex-1 text-left">{file.name}</span>
+                            <span className="text-[9px] font-mono text-slate-600">{(file.size / 1024).toFixed(1)}K</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1.5 mb-2 font-mono">
           Recent Documents
         </h3>
